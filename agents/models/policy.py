@@ -29,8 +29,8 @@ class PolicyModule(nn.Module):
         fc_output2 = F.relu(self.fc_layer2(fc_output1))
         fc_output = F.relu(self.fc_layer3(fc_output2))
         # removed normalization of expected vaalue. Although the output is sending through the normalization, see inside normalization block. it is not done.
-        # print("fc_output\n")
-        # print(fc_output)
+        print("fc_output")
+        print(fc_output)
         mu = F.tanh(self.mu(fc_output))
         sigma = F.sigmoid(self.sigma(fc_output) + 1e-5)
         z = self.normalDistribution(0, 1).sample()
