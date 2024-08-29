@@ -132,13 +132,13 @@ class CPO(Agent):
                 policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean()
 
                 # early stop: approx kl calculation
-                # log_ratio = logprobs_prediction - logprobs_batch
-                # approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
-                # if approx_kl > 1.5 * self.target_kl:
-                #     if self.args.verbose:
-                #         print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
-                #     continue_pi_training = False
-                #     break
+                log_ratio = logprobs_prediction - logprobs_batch
+                approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
+                if approx_kl > 1.5 * self.target_kl:
+                    if self.args.verbose:
+                        print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
+                    continue_pi_training = False
+                    break
 
                 if torch.isnan(policy_loss):  # for debugging only!
                     print('policy loss: {}'.format(policy_loss))
@@ -163,8 +163,12 @@ class CPO(Agent):
                 #finding the cost step direction
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
-                cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
+                try:
+                    cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
+                except(ZeroDivisionError):
+                    pass
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
+
 
                 # Define q, r, s
                 p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
@@ -172,14 +176,6 @@ class CPO(Agent):
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
 
-                print("p")
-                print(p)
-                print("q")
-                print(q)
-                print("r")
-                print(r)
-                print("s")
-                print(s)
 
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
                 cc = constraint - self.d_k
