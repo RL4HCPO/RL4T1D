@@ -13,9 +13,19 @@ class ActorNetwork(nn.Module):
         self.FeatureExtractor = LSTMFeatureExtractor(args)
         self.PolicyModule = PolicyModule(args)
 
+        self.prev_mu = None
+        self.prev_sigma = None
+
     def forward(self, s):
         lstmOut = self.FeatureExtractor.forward(s)
         mu, sigma, action, log_prob = self.PolicyModule.forward(lstmOut)
+        # self.prev_mu = mu
+        # self.prev_sigma = sigma
+
+        if self.prev_mu is None and self.prev_sigma is None:
+            self.prev_mu = mu.clone().detach()
+            self.prev_sigma = sigma.clone().detach()
+
         return mu, sigma, action, log_prob
     
     def get_fim(self, x):
@@ -40,12 +50,27 @@ class ActorNetwork(nn.Module):
         return cov_inv.detach(), mu, {'std_id': std_id, 'std_index': std_index}
     
     def get_kl(self, x):
+        # mu0 = self.prev_mu
+        # sigma0 = self.prev_sigma
         mu1, sigma1, _, _ = self.forward(x)
 
-        mu0 = mu1.detach()
-        sigma0 = sigma1.detach()
+        mu0 = self.prev_mu
+        sigma0 = self.prev_sigma
+
+        # print('sigma0')
+        # print(sigma0)
+        # print('sigma1')
+        # print(sigma1)
+        # print('equality')
+        # print(torch.equal(sigma0, sigma1))
 
         kl = sigma1.log() - sigma0.log() + (sigma0.pow(2) + (mu0 - mu1).pow(2)) / (2.0 * sigma1.pow(2)) - 0.5
+        # print('kl before sum')
+        # print(kl.size())
+
+        self.prev_mu = mu1.detach().clone()
+        self.prev_sigma = sigma1.detach().clone()
+
         return kl.sum(1, keepdim=True)
 
 
@@ -67,7 +92,6 @@ class ActorCritic(nn.Module):
         self.device = args.device
         self.experiment_dir = args.experiment_dir
         self.Actor = ActorNetwork(args)
-        self.Critic = CriticNetwork(args)
         self.Critic = CriticNetwork(args)
         if load:
             self.Actor = torch.load(actor_path, map_location=self.device)

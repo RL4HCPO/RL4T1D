@@ -73,17 +73,18 @@ class CPO(Agent):
     
         # implementing fisher information matrix
         def Fvp_direct(v):
-            kl = self.policy.Actor.get_kl(states_batch)
-            kl = kl.mean()
+            with torch.backends.cudnn.flags(enabled=False):
+                kl = self.policy.Actor.get_kl(states_batch)
+                kl = kl.mean()
 
-            grads = torch.autograd.grad(kl, self.policy.Actor.parameters(), create_graph=True)
-            flat_grad_kl = torch.cat([grad.view(-1) for grad in grads])
+                grads = torch.autograd.grad(kl, self.policy.Actor.parameters(), create_graph=True)
+                flat_grad_kl = torch.cat([grad.view(-1) for grad in grads])
+                
+                kl_v = (flat_grad_kl * v).sum()
+                grads = torch.autograd.grad(kl_v, self.policy.Actor.parameters())
+                flat_grad_grad_kl = torch.cat([grad.contiguous().view(-1) for grad in grads]).detach()
 
-            kl_v = (flat_grad_kl * v).sum()
-            grads = torch.autograd.grad(kl_v, self.policy.Actor.parameters())
-            flat_grad_grad_kl = torch.cat([grad.contiguous().view(-1) for grad in grads]).detach()
-
-            return flat_grad_grad_kl + v * self.damping
+                return flat_grad_grad_kl + v * self.damping
     
         def Fvp_fim(v):
             with torch.backends.cudnn.flags(enabled=False):
@@ -197,20 +198,42 @@ class CPO(Agent):
                 lamda = 2*self.max_kl
 
                 #find optimal lambda_a and  lambda_b
-                A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s))
-                B = torch.sqrt(q/self.max_kl)
+                print((self.max_kl - (cc**2)/s))
+                print((q - (r**2)/s))
+                # A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s)) # here is the problem,square root of a negative value.
+                # B = torch.sqrt(q/self.max_kl)
+                # Clamp values inside the square root to ensure non-negativity as a result for the above problem. later check this is not contrasting with the logic.
+                # Check this while hyper parameter tuning.
+                A = torch.sqrt(torch.clamp((q - (r**2)/s) / torch.clamp((self.max_kl - (cc**2)/s), min=1e-8), min=1e-6))
+                B = torch.sqrt(torch.clamp((q /self.max_kl), min=1e-6))
                 print("cc - \n")
                 print(cc)
+                epsilon = 10**(-4)
                 # here is cc=0, what is happening? r/cc will become nan.
                 if cc>0:
+                    print('cc>0')
                     opt_lam_a = torch.max(r/cc,A)
-                    opt_lam_b = torch.max(0*A,torch.min(B,r/cc))
+                    opt_lam_b = torch.max((0+epsilon)*A,torch.min(B,r/cc))
+                    print('opt_lam_a')
+                    print(opt_lam_a)
+                    print('opt_lam_b')
+                    print(opt_lam_b)
                 else: 
+                    print('else')
                     opt_lam_b = torch.max(r/cc,B)
-                    opt_lam_a = torch.max(0*A,torch.min(A,r/cc)) # here is the problem
+                    print('A')
+                    print(A)
+                    print('r')
+                    print(r)
+                    opt_lam_a = torch.max((0+epsilon)*A,torch.min(A,r/cc)) # here is the problem
+                    print('opt_lam_a')
+                    print(opt_lam_a)
+                    print('opt_lam_b')
+                    print(opt_lam_b)
                 
                 #define f_a(\lambda) and f_b(\lambda)
                 def f_a_lambda(lamda):
+                    lamda = max(lamda, 1e-8) # changed here, check during hyper parameter tuning
                     print("s inside falamda - \n")
                     print(s)
                     print("lamda inside falamda - \n")
