@@ -166,8 +166,9 @@ class CPO(Agent):
                 
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
                 norm_val = torch.norm(cost_loss_grad)
-                if(torch.isnan(norm_val).any() and torch.norm(cost_loss_grad)!=0):
-                    cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
+                if (torch.isnan(norm_val).any() and torch.norm(cost_loss_grad) != 0):
+                    norm_cost_loss_grad = torch.norm(cost_loss_grad)
+                    cost_loss_grad = cost_loss_grad / (norm_cost_loss_grad + 1e-8)
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
                 print("cost_grads")
