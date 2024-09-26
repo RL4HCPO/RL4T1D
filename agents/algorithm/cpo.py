@@ -163,9 +163,10 @@ class CPO(Agent):
 
                 #finding the cost step direction
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
+                
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
                 norm_val = torch.norm(cost_loss_grad)
-                if(torch.isnan(norm_val).any()):
+                if(torch.isnan(norm_val).any() and torch.norm(cost_loss_grad)!=0):
                     cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
