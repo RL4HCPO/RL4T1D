@@ -60,11 +60,19 @@ class CPO(Agent):
             rdotr = torch.dot(r, r)
             for i in range(nsteps):
                 Avp = Avp_f(p)
-                alpha = rdotr / torch.dot(p, Avp)
+                alpha = rdotr / (torch.dot(p, Avp)+1e-8)
+                print('torch.dot(p, Avp) inside conjugate gradient')
+                print(torch.dot(p, Avp))
+                print('alpha inside conjugate gradient')
+                print(alpha)
                 x += alpha * p
                 r -= alpha * Avp
                 new_rdotr = torch.dot(r, r)
-                betta = new_rdotr / rdotr
+                betta = new_rdotr / (rdotr+1e-8)
+                print('rdotr inside conjugate gradient')
+                print(rdotr)
+                print('betta inside conjugate gradient')
+                print(betta)
                 p = r + betta * p
                 rdotr = new_rdotr
                 if rdotr < rdotr_tol:
@@ -89,10 +97,11 @@ class CPO(Agent):
         def Fvp_fim(v):
             with torch.backends.cudnn.flags(enabled=False):
                 M, mu, info = self.policy.Actor.get_fim(states_batch)
+                assert not torch.isnan(mu).any(), "mu contains NaNs"
+                assert not torch.isnan(v).any(), "v contains NaNs"
                 #pdb.set_trace()
                 mu = mu.view(-1)
                 filter_input_ids = set([info['std_id']])
-
                 t = torch.ones(mu.size(), requires_grad=True, device=mu.device)
                 mu_t = (mu * t).sum()
                 Jt = compute_flat_grad(mu_t, self.policy.Actor.parameters(), filter_input_ids=filter_input_ids, create_graph=True)
@@ -133,6 +142,7 @@ class CPO(Agent):
                 policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean()
 
                 # early stop: approx kl calculation
+                # remove this for now
                 log_ratio = logprobs_prediction - logprobs_batch
                 approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
                 if approx_kl > 1.5 * self.target_kl:
@@ -162,36 +172,26 @@ class CPO(Agent):
                 cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
 
                 #finding the cost step direction
+
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
-                
+            
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
                 norm_val = torch.norm(cost_loss_grad)
                 if (torch.isnan(norm_val).any() and torch.norm(cost_loss_grad) != 0):
                     norm_cost_loss_grad = torch.norm(cost_loss_grad)
+                    print('norm_cost_loss_grad')
+                    print(norm_cost_loss_grad)
                     cost_loss_grad = cost_loss_grad / (norm_cost_loss_grad + 1e-8)
+                assert not torch.isnan(cost_loss_grad).any(), "cost_loss_grad contains NaNs"
+                # cost_loss_grad = torch.nan_to_num(cost_loss_grad, nan=0.0) # wrong 
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
-                print("cost_grads")
-                print(cost_grads)
-                print("cost_loss_grad")
-                print(cost_loss_grad)
-                print("cost_stepdir")
-                print(cost_stepdir)
-
                 # Define q, r, s
+                # plot p, q, r, s
                 p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
                 q = -loss_grad.dot(stepdir) #g^T.H^-1.g
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
-
-                print("p")
-                print(p)
-                print("q")
-                print(q)
-                print("r")
-                print(r)
-                print("s")
-                print(s)
 
 
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
@@ -200,57 +200,32 @@ class CPO(Agent):
                 lamda = 2*self.max_kl
 
                 #find optimal lambda_a and  lambda_b
-                print((self.max_kl - (cc**2)/s))
-                print((q - (r**2)/s))
                 # A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s)) # here is the problem,square root of a negative value.
                 # B = torch.sqrt(q/self.max_kl)
                 # Clamp values inside the square root to ensure non-negativity as a result for the above problem. later check this is not contrasting with the logic.
                 # Check this while hyper parameter tuning.
+                # replace the network
+                # try to normalize values, the scaling may change in the middle of the training
                 A = torch.sqrt(torch.clamp((q - (r**2)/s) / torch.clamp((self.max_kl - (cc**2)/s), min=1e-8), min=1e-6))
                 B = torch.sqrt(torch.clamp((q /self.max_kl), min=1e-6))
-                print("cc - \n")
-                print(cc)
                 epsilon = 10**(-4)
                 # here is cc=0, what is happening? r/cc will become nan.
                 if cc>0:
-                    print('cc>0')
                     opt_lam_a = torch.max(r/cc,A)
                     opt_lam_b = torch.max((0+epsilon)*A,torch.min(B,r/cc))
-                    print('opt_lam_a')
-                    print(opt_lam_a)
-                    print('opt_lam_b')
-                    print(opt_lam_b)
                 else: 
-                    print('else')
                     opt_lam_b = torch.max(r/cc,B)
-                    print('A')
-                    print(A)
-                    print('r')
-                    print(r)
-                    opt_lam_a = torch.max((0+epsilon)*A,torch.min(A,r/cc)) # here is the problem
-                    print('opt_lam_a')
-                    print(opt_lam_a)
-                    print('opt_lam_b')
-                    print(opt_lam_b)
+                    opt_lam_a = torch.max((0+epsilon)*A,torch.min(A,r/cc)) # 0*A ?? 
                 
                 #define f_a(\lambda) and f_b(\lambda)
                 def f_a_lambda(lamda):
                     lamda = max(lamda, 1e-8) # changed here, check during hyper parameter tuning
-                    print("s inside falamda - \n")
-                    print(s)
-                    print("lamda inside falamda - \n")
-                    print(lamda)
                     a = ((r**2)/s - q)/(2*lamda)
                     b = lamda*((cc**2)/s - self.max_kl)/2
                     c = - (r*cc)/s
-                    print("a in falambda =", a)
-                    print("b in falambda=", b)
-                    print("c in falambda=", c)
                     return a+b+c
                 
                 def f_b_lambda(lamda):
-                    print("lamda inside fblamda - \n")
-                    print(lamda)
                     a = -(q/lamda + lamda*self.max_kl)/2
                     return a   
                 
@@ -258,18 +233,12 @@ class CPO(Agent):
                 opt_f_a = f_a_lambda(opt_lam_a)
                 opt_f_b = f_b_lambda(opt_lam_b)
 
-                print("opt_f_a")
-                print(opt_f_a)
-                print("opt_f_b")
-                print(opt_f_b)
                 if opt_f_a > opt_f_b:
                     opt_lambda = opt_lam_a
                 else:
                     opt_lambda = opt_lam_b
                         
                 #find optimal nu
-                print("s in nu- \n")
-                print(s)
                 nu = (opt_lambda*cc - r)/s
                 if nu>0:
                     opt_nu = nu 
@@ -277,20 +246,12 @@ class CPO(Agent):
                     opt_nu = 0
 
                 # finding optimal step direction
-                print("nu")
-                print(nu)
-                print("s instepdir- \n")
-                print(s)
-                print("opt_lambda")
-                print(opt_lambda)
                 if ((cc**2)/s - self.max_kl) > 0 and cc>0:
                     opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
                 else:
                     opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
                 
                 # trying without line search
-                print("opt_stepdir - \n")
-                print(opt_stepdir)
                 prev_params = get_flat_params_from(self.policy.Actor)
                 new_params = prev_params + opt_stepdir
                 set_flat_params_to(self.policy.Actor, new_params)
