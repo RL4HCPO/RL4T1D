@@ -9,6 +9,10 @@ class LSTMFeatureExtractor(nn.Module):
                             batch_first=True, bidirectional=args.bidirectional)  # (seq_len, batch, input_size)
 
     def forward(self, s):
+        # print('input')
+        # print(s)
         output, (hid, cell) = self.LSTM(s)
         lstm_output = hid.view(hid.size(1), -1)  # => batch , layers * hid
+        # print('lstm out')
+        # print(lstm_output)
         return lstm_output

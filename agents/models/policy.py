@@ -23,6 +23,7 @@ class PolicyModule(nn.Module):
         self.mu = NormedLinear(self.last_hidden, self.output, scale=0.1)
         self.sigma = NormedLinear(self.last_hidden, self.output, scale=0.1)
         self.normalDistribution = torch.distributions.Normal
+        self.penalty = 0;
 
     def forward(self, extract_states):
         fc_output1 = F.relu(self.fc_layer1(extract_states))
@@ -31,12 +32,21 @@ class PolicyModule(nn.Module):
         # removed normalization of expected vaalue. Although the output is sending through the normalization, see inside normalization block. it is not done.
         # print("fc_output\n")
         # print(fc_output)
+        self.penalty = torch.norm(fc_output, p=2)
+
         mu = F.tanh(self.mu(fc_output))
-        sigma = F.sigmoid(self.sigma(fc_output) + 1e-5)
+        
+        # print('mu inside policy')
+        # print(mu)
+        # sigma = F.sigmoid(self.sigma(fc_output) + 1e-5)
+        sigma = F.sigmoid(self.sigma(fc_output))+ 1e-6
+        # print('sigma inside policy')
+        # print(sigma)
         z = self.normalDistribution(0, 1).sample()
         action = mu + sigma * z
         action = torch.clamp(action, -1, 1)
         try:
+
             dst = self.normalDistribution(mu, sigma)
             log_prob = dst.log_prob(action[0])
         except ValueError:

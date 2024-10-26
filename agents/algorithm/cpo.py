@@ -59,12 +59,22 @@ class CPO(Agent):
             p = b.clone()
             rdotr = torch.dot(r, r)
             for i in range(nsteps):
+                # print('p inside conj')
+                # print(p)
                 Avp = Avp_f(p)
+                # print('avp inside conj')
+                # print(Avp)
                 alpha = rdotr / torch.dot(p, Avp)
+                # print('alpha inside conj')
+                # print(alpha)
                 x += alpha * p
                 r -= alpha * Avp
                 new_rdotr = torch.dot(r, r)
+                # print('new_rdotr inside conj')
+                # print(new_rdotr)
                 betta = new_rdotr / rdotr
+                # print('betta inside conj')
+                # print(betta)
                 p = r + betta * p
                 rdotr = new_rdotr
                 if rdotr < rdotr_tol:
@@ -124,28 +134,29 @@ class CPO(Agent):
                 cost_advantages_batch = self.rollout_buffer['cost_advantage'][start_idx:end_idx]
                 cost_advantages_batch = (cost_advantages_batch - cost_advantages_batch.mean()) / (cost_advantages_batch.std() + 1e-5)
 
-                print(i)
+                # print(i)
                 logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
                 ratios = torch.exp(logprobs_prediction - logprobs_batch)
                 ratios = ratios.squeeze()
                 r_theta = ratios * advantages_batch
-                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.1
 
                 # early stop: approx kl calculation
-                # log_ratio = logprobs_prediction - logprobs_batch
-                # approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
-                # if approx_kl > 1.5 * self.target_kl:
-                #     if self.args.verbose:
-                #         print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
-                #     continue_pi_training = False
-                #     break
+                log_ratio = logprobs_prediction - logprobs_batch
+                approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
+                if approx_kl > 1.5 * self.target_kl:
+                    if self.args.verbose:
+                        print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
+                    continue_pi_training = False
+                    break
 
                 if torch.isnan(policy_loss):  # for debugging only!
                     print('policy loss: {}'.format(policy_loss))
                     exit()
 
                 temp_loss_log += policy_loss.detach()
-                policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
+                # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
+                policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
                 policy_grad_ += policy_grad # used to returing mean_pi_gradient at the end
                 grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
                 loss_grad = torch.cat([grad.view(-1) for grad in grads])
@@ -153,17 +164,22 @@ class CPO(Agent):
 
                 # finding the step direction / add direct hessian finding function here later. get the parameter from args
                 Fvp = Fvp_fim
+                # print('loss_grad')
+                # print(loss_grad)
                 stepdir = conjugate_gradients(Fvp, -loss_grad, 10)
                 # if gradient normalizing, normalize the step dir here
 
                 # findign cost loss
                 c_theta = ratios * cost_advantages_batch
-                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()+ self.policy.Actor.PolicyModule.penalty * 0.1
+
 
                 #finding the cost step direction
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
                 cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
+                # print('cost_loss_grad')
+                # print(cost_loss_grad)
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
                 # Define q, r, s
@@ -172,14 +188,14 @@ class CPO(Agent):
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
 
-                print("p")
-                print(p)
-                print("q")
-                print(q)
-                print("r")
-                print(r)
-                print("s")
-                print(s)
+                # print("p")
+                # print(p)
+                # print("q")
+                # print(q)
+                # print("r")
+                # print(r)
+                # print("s")
+                # print(s)
 
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
                 cc = constraint - self.d_k
