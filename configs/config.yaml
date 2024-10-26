@@ -1,42 +1,61 @@
+# Experiment configuration
 experiment:
   folder: ${hydra:job.name}
   experiment_dir: ../results/${hydra:job.name}
-  device: 'cpu'
+  device: 'cuda'  # Set to 'cuda' for GPU, or 'cpu' for CPU
   verbose: True
   seed: 0
 
+# Default configurations
 defaults:
   - env: env
-  - agent: ppo
+  - agent: ppo  # Default agent is PPO, can be changed to your preferred agent type (e.g., cpo)
   - _self_
 
+# Environment settings
 env:
   experiment_folder: ${experiment.experiment_dir}
-  device: ${experiment.device}
+  device: ${experiment.device}  # Configured from the 'experiment' section, change to 'cuda' for GPU
   verbose: ${experiment.verbose}
   seed: ${experiment.seed}
 
+# Agent settings (without tuning ranges, just default values)
 agent:
   experiment_folder: ${experiment.experiment_dir}
   experiment_dir: ${experiment.experiment_dir}
-  device: ${experiment.device}
+  device: ${experiment.device}  # Ensure agent uses the correct device (GPU/CPU)
   verbose: ${experiment.verbose}
   seed: ${experiment.seed}
 
-  # need to resolve these.
+  # Fixed parameters
   n_action: 1
   n_features: 2
   feature_history: 12
-
   control_space_type: 'exponential'
-
   patient_id: 0
 
+  # Action and glucose settings
   insulin_min: 0
   insulin_max: 5
-
-  glucose_max: 600  # Note the selected sensors range would affect this
+  glucose_max: 600  # Based on selected sensors range
   glucose_min: 39
 
+  # Hyperparameters (default values, can be overridden in a multirun)
+  pi_lr: 1e-4
+  vf_lr: 1e-4
+  entropy_coef: 0.01
+  grad_clip: 0.5
+  eps_clip: 0.2
+  max_kl: 0.1  # Max KL Divergence (can be tuned via command line)
+  damping: 0.01  # Damping parameter (can be tuned via command line)
+  target_kl: 0.05
+  n_vf_epochs: 5
+  n_pi_epochs: 5
+  d_k: 40  # Add the d_k hyperparameter here
 
-# python run_RL_agent.py hydra.job.name=tery agent.debug=True hydra/job_logging=disabled
+# The hydra section (simplified)
+hydra:
+  sweep:
+    dir: multirun  # Directory to store results for multiruns
+    subdir: ${hydra.job.num}  # Subdirectory for each job run
+
