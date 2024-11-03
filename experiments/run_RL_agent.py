@@ -29,6 +29,12 @@ def set_agent_parameters(cfg):
         setup_folders(cfg)
         agent = CPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
+
+    elif cfg.agent.agent == 'pcpo':
+        from agents.algorithm.pcpo import PCPO
+        setup_folders(cfg)
+        agent = PCPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
+
     # elif args.agent.agent == 'a2c':
     #     from agents.algorithm.a2c import A2C
     #     agent = A2C(args=args, load_model=False, actor_path='', critic_path='')

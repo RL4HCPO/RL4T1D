@@ -9,7 +9,7 @@ experiment:
 # Default configurations
 defaults:
   - env: env
-  - agent: ppo  # Default agent is PPO, can be changed to your preferred agent type (e.g., cpo)
+  - agent: pcpo # Default agent is PPO, can be changed to your preferred agent type (e.g., cpo)
   - _self_
 
 # Environment settings
