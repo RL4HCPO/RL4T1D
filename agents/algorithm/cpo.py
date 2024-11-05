@@ -183,6 +183,10 @@ class CPO(Agent):
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
                 # Define q, r, s
+                # print(cost_loss_grad.shape)
+                # print(stepdir.shape)
+                # print(loss_grad.shape)
+                # print(cost_stepdir.shape)
                 p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
                 q = -loss_grad.dot(stepdir) #g^T.H^-1.g
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
@@ -196,7 +200,8 @@ class CPO(Agent):
                 # print(r)
                 # print("s")
                 # print(s)
-
+                epsilon = 1e-6
+                s = s + epsilon
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
                 cc = constraint - self.d_k
                 lamda = 2*self.max_kl
@@ -206,12 +211,25 @@ class CPO(Agent):
                 B = torch.sqrt(q/self.max_kl)
                 # print("cc - \n")
                 # print(cc)
+                # print('A')
+                # print(A)
+                # print('B')
+                # print(B)
+                
+                cc += epsilon
                 if cc>0:
+                    # print('inside cc>0')
                     opt_lam_a = torch.max(r/cc,A)
+                    # print(0*A)
+                    # print(torch.min(B,r/cc))
                     opt_lam_b = torch.max(0*A,torch.min(B,r/cc))
                 else: 
+                    # print('inside cc<0')
                     opt_lam_b = torch.max(r/cc,B)
+                    # print(torch.min(A,r/cc))
                     opt_lam_a = torch.max(0*A,torch.min(A,r/cc))
+                    # print('opt_lam_a=', opt_lam_a)
+                    # print('opt_lam_b=', opt_lam_b)
                 
                 #define f_a(\lambda) and f_b(\lambda)
                 def f_a_lambda(lamda):
@@ -219,6 +237,8 @@ class CPO(Agent):
                     # print(s)
                     # print("lamda inside falamda - \n")
                     # print(lamda)
+                    lamda = lamda + epsilon
+                    # s = s+epsilon
                     a = ((r**2)/s - q)/(2*lamda)
                     b = lamda*((cc**2)/s - self.max_kl)/2
                     c = - (r*cc)/s
@@ -227,22 +247,27 @@ class CPO(Agent):
                 def f_b_lambda(lamda):
                     # print("lamda inside fblamda - \n")
                     # print(lamda)
+                    lamda = lamda + epsilon
                     a = -(q/lamda + lamda*self.max_kl)/2
                     return a   
                 
                 #find values of optimal lambdas 
                 opt_f_a = f_a_lambda(opt_lam_a)
                 opt_f_b = f_b_lambda(opt_lam_b)
+                # print('opt_f_a=', opt_f_a)
+                # print('opt_f_b=', opt_f_b)
 
                 if opt_f_a > opt_f_b:
+                    # print('inside 1')
                     opt_lambda = opt_lam_a
                 else:
+                    # print('inside else')
                     opt_lambda = opt_lam_b
                         
                 #find optimal nu
                 # print("s in nu- \n")
                 # print(s)
-                nu = (opt_lambda*cc - r)/s
+                nu = (opt_lambda*cc - r)/s 
                 if nu>0:
                     opt_nu = nu 
                 else:
@@ -252,8 +277,14 @@ class CPO(Agent):
                 # print("s instepdir- \n")
                 # print(s)
                 if ((cc**2)/s - self.max_kl) > 0 and cc>0:
+                    # print('cost satisfied')
+                    # print('2*self.max_kl/s')
+                    # print(2*self.max_kl/s)
                     opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
                 else:
+                    # print('cost not satisfied')
+                    # print('opt_lambda')
+                    # print(opt_lambda)
                     opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
                 
                 # trying without line search

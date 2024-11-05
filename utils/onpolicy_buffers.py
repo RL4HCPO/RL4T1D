@@ -74,6 +74,8 @@ class RolloutBuffer:
         orig_device = self.v_pred.device
         assert orig_device == self.cost.device == self.first_flag.device
         vpred, cost, first = (x.cpu() for x in (self.v_pred, self.cost, self.first_flag))
+        # print('cost inside compute gcae')
+        # print(cost)
         first = first.to(dtype=torch.float32)
         assert first.dim() == 2
         nenv, nsteps = cost.shape
@@ -166,6 +168,7 @@ class RolloutWorker:
     def store(self, obs, act, rew, val, logp, cgm_target, is_first):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
+        self.cost[self.ptr] = (obs[:, 0]).mean()
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
