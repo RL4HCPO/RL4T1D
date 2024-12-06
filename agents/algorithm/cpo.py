@@ -192,44 +192,30 @@ class CPO(Agent):
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
 
-                # print("p")
-                # print(p)
-                # print("q")
-                # print(q)
-                # print("r")
-                # print(r)
-                # print("s")
-                # print(s)
+            
                 epsilon = 1e-6
                 s = s + epsilon
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
-                cc = constraint - self.d_k
+                cc =  - constraint - self.d_k
                 lamda = 2*self.max_kl
 
                 #find optimal lambda_a and  lambda_b
                 A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s))
                 B = torch.sqrt(q/self.max_kl)
-                # print("cc - \n")
-                # print(cc)
-                # print('A')
-                # print(A)
-                # print('B')
-                # print(B)
+        
                 
                 cc += epsilon
                 if cc>0:
                     # print('inside cc>0')
                     opt_lam_a = torch.max(r/cc,A)
-                    # print(0*A)
-                    # print(torch.min(B,r/cc))
+                    
                     opt_lam_b = torch.max(0*A,torch.min(B,r/cc))
                 else: 
-                    # print('inside cc<0')
+                    
                     opt_lam_b = torch.max(r/cc,B)
-                    # print(torch.min(A,r/cc))
+                    
                     opt_lam_a = torch.max(0*A,torch.min(A,r/cc))
-                    # print('opt_lam_a=', opt_lam_a)
-                    # print('opt_lam_b=', opt_lam_b)
+                    
                 
                 #define f_a(\lambda) and f_b(\lambda)
                 def f_a_lambda(lamda):
