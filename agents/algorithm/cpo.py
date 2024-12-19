@@ -141,7 +141,7 @@ class CPO(Agent):
                 ratios = torch.exp(logprobs_prediction - logprobs_batch)
                 ratios = ratios.squeeze()
                 r_theta = ratios * advantages_batch
-                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.1
+                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.00001
 
                 # early stop: approx kl calculation
                 log_ratio = logprobs_prediction - logprobs_batch

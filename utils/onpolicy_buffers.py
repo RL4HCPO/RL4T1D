@@ -168,7 +168,10 @@ class RolloutWorker:
     def store(self, obs, act, rew, val, logp, cgm_target, is_first):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        self.cost[self.ptr] = (obs[:, 0]).mean()
+        if cgm_target <= 70:
+            self.cost[self.ptr] = 1
+        else:
+            self.cost[self.ptr] = 0
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
