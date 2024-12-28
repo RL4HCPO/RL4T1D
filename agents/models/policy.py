@@ -23,7 +23,7 @@ class PolicyModule(nn.Module):
         self.mu = NormedLinear(self.last_hidden, self.output, scale=0.1)
         self.sigma = NormedLinear(self.last_hidden, self.output, scale=0.1)
         self.normalDistribution = torch.distributions.Normal
-        self.penalty = 0;
+        self.penalty = 0
 
     def forward(self, extract_states):
         fc_output1 = F.relu(self.fc_layer1(extract_states))

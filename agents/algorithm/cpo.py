@@ -59,22 +59,12 @@ class CPO(Agent):
             p = b.clone()
             rdotr = torch.dot(r, r)
             for i in range(nsteps):
-                # print('p inside conj')
-                # print(p)
                 Avp = Avp_f(p)
-                # print('avp inside conj')
-                # print(Avp)
                 alpha = rdotr / torch.dot(p, Avp)
-                # print('alpha inside conj')
-                # print(alpha)
                 x += alpha * p
                 r -= alpha * Avp
                 new_rdotr = torch.dot(r, r)
-                # print('new_rdotr inside conj')
-                # print(new_rdotr)
                 betta = new_rdotr / rdotr
-                # print('betta inside conj')
-                # print(betta)
                 p = r + betta * p
                 rdotr = new_rdotr
                 if rdotr < rdotr_tol:
@@ -98,7 +88,6 @@ class CPO(Agent):
         def Fvp_fim(v):
             with torch.backends.cudnn.flags(enabled=False):
                 M, mu, info = self.policy.Actor.get_fim(states_batch)
-                #pdb.set_trace()
                 mu = mu.view(-1)
                 filter_input_ids = set([info['std_id']])
 
@@ -139,8 +128,8 @@ class CPO(Agent):
                 ratios = torch.exp(logprobs_prediction - logprobs_batch)
                 ratios = ratios.squeeze()
                 r_theta = ratios * advantages_batch
-                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.1
 
+                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.00001
                 # early stop: approx kl calculation
                 log_ratio = logprobs_prediction - logprobs_batch
                 approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
@@ -155,8 +144,8 @@ class CPO(Agent):
                     exit()
 
                 temp_loss_log += policy_loss.detach()
-                # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
-                policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
+                policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
+                # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
                 policy_grad_ += policy_grad # used to returing mean_pi_gradient at the end
                 grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
                 loss_grad = torch.cat([grad.view(-1) for grad in grads])
@@ -164,14 +153,12 @@ class CPO(Agent):
 
                 # finding the step direction / add direct hessian finding function here later. get the parameter from args
                 Fvp = Fvp_fim
-                # print('loss_grad')
-                # print(loss_grad)
                 stepdir = conjugate_gradients(Fvp, -loss_grad, 10)
                 # if gradient normalizing, normalize the step dir here
 
                 # findign cost loss
                 c_theta = ratios * cost_advantages_batch
-                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()+ self.policy.Actor.PolicyModule.penalty * 0.1
+                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()+ self.policy.Actor.PolicyModule.penalty * 0.00001
 
 
                 #finding the cost step direction
@@ -183,10 +170,6 @@ class CPO(Agent):
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
                 # Define q, r, s
-                # print(cost_loss_grad.shape)
-                # print(stepdir.shape)
-                # print(loss_grad.shape)
-                # print(cost_stepdir.shape)
                 p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
                 q = -loss_grad.dot(stepdir) #g^T.H^-1.g
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
@@ -196,7 +179,7 @@ class CPO(Agent):
                 epsilon = 1e-6
                 s = s + epsilon
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
-                cc =  - constraint - self.d_k
+                cc =  - constraint + self.d_k
                 lamda = 2*self.max_kl
 
                 #find optimal lambda_a and  lambda_b
@@ -206,33 +189,24 @@ class CPO(Agent):
                 
                 cc += epsilon
                 if cc>0:
-                    # print('inside cc>0')
                     opt_lam_a = torch.max(r/cc,A)
-                    
-                    opt_lam_b = torch.max(0*A,torch.min(B,r/cc))
+                    opt_lam_b = torch.max(torch.zeros_like(A),torch.min(B,r/cc))
                 else: 
                     
                     opt_lam_b = torch.max(r/cc,B)
                     
-                    opt_lam_a = torch.max(0*A,torch.min(A,r/cc))
+                    opt_lam_a = torch.max(torch.zeros_like(A),torch.min(A,r/cc))
                     
                 
                 #define f_a(\lambda) and f_b(\lambda)
                 def f_a_lambda(lamda):
-                    # print("s inside falamda - \n")
-                    # print(s)
-                    # print("lamda inside falamda - \n")
-                    # print(lamda)
                     lamda = lamda + epsilon
-                    # s = s+epsilon
                     a = ((r**2)/s - q)/(2*lamda)
                     b = lamda*((cc**2)/s - self.max_kl)/2
                     c = - (r*cc)/s
                     return a+b+c
                 
                 def f_b_lambda(lamda):
-                    # print("lamda inside fblamda - \n")
-                    # print(lamda)
                     lamda = lamda + epsilon
                     a = -(q/lamda + lamda*self.max_kl)/2
                     return a   
@@ -240,19 +214,13 @@ class CPO(Agent):
                 #find values of optimal lambdas 
                 opt_f_a = f_a_lambda(opt_lam_a)
                 opt_f_b = f_b_lambda(opt_lam_b)
-                # print('opt_f_a=', opt_f_a)
-                # print('opt_f_b=', opt_f_b)
 
                 if opt_f_a > opt_f_b:
-                    # print('inside 1')
                     opt_lambda = opt_lam_a
                 else:
-                    # print('inside else')
                     opt_lambda = opt_lam_b
                         
                 #find optimal nu
-                # print("s in nu- \n")
-                # print(s)
                 nu = (opt_lambda*cc - r)/s 
                 if nu>0:
                     opt_nu = nu 
@@ -260,17 +228,9 @@ class CPO(Agent):
                     opt_nu = 0
 
                 # finding optimal step direction
-                # print("s instepdir- \n")
-                # print(s)
                 if ((cc**2)/s - self.max_kl) > 0 and cc>0:
-                    # print('cost satisfied')
-                    # print('2*self.max_kl/s')
-                    # print(2*self.max_kl/s)
                     opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
                 else:
-                    # print('cost not satisfied')
-                    # print('opt_lambda')
-                    # print(opt_lambda)
                     opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
                 
                 # trying without line search

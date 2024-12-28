@@ -30,7 +30,7 @@ damping: 0.1
 n_step: 256
 max_epi_length: 2880
 n_training_workers: 16
-total_interactions: 800000  # total number of interactions the agent will train for
+total_interactions: 800000  # total number of interactions the agent will train for 800000
 n_interactions_lr_decay: 600000
 
 # training parameters
@@ -45,7 +45,7 @@ n_testing_workers: 20
 max_test_epi_len: 288  # testing conducted for 1 day: 12 steps/hr * 24 hours
 
 # validation
-n_val_trials: 500
+n_val_trials: 500 #500
 
 
 
