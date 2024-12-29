@@ -158,7 +158,7 @@ class RolloutWorker:
         self.state = np.zeros(core.combined_shape(self.size, (self.feature_hist, self.features)), dtype=np.float32)
         self.actions = np.zeros(self.size, dtype=np.float32)
         self.rewards = np.zeros(self.size, dtype=np.float32)
-        self.cost = torch.tensor(0.01 * np.ones(self.size, dtype=np.float32))
+        self.cost = np.ones(self.size, dtype=np.float32)
         self.state_values = np.zeros(self.size + 1, dtype=np.float32)
         self.logprobs = np.zeros(self.size, dtype=np.float32)
         self.first_flag = np.zeros(self.size + 1, dtype=np.bool_)
@@ -168,10 +168,10 @@ class RolloutWorker:
     def store(self, obs, act, rew, val, logp, cgm_target, is_first):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        if cgm_target <= 70:
-            self.cost[self.ptr] = 1
+        if ((obs[:, 0]).mean() < 0 ):
+            self.cost[self.ptr] = (obs[:, 0]).mean()
         else:
-            self.cost[self.ptr] = 0
+            self.cost[self.ptr] = -0.0001
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
