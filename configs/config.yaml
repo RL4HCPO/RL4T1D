@@ -2,7 +2,7 @@
 experiment:
   folder: ${hydra:job.name}
   experiment_dir: ../results/${hydra:job.name}
-  device: 'cuda'  # Set to 'cuda' for GPU, or 'cpu' for CPU
+  device: 'cpu'  # Set to 'cuda' for GPU, or 'cpu' for CPU
   verbose: True
   seed: 0
 
