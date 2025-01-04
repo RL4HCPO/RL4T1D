@@ -127,9 +127,13 @@ class CPO(Agent):
                 logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
                 ratios = torch.exp(logprobs_prediction - logprobs_batch)
                 ratios = ratios.squeeze()
-                r_theta = ratios * advantages_batch
+                # r_theta = ratios * advantages_batch
+                # + self.policy.Actor.PolicyModule.penalty * 0.00001
+                # policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() 
+                surr1 = ratios * advantages_batch
+                surr2 = torch.clamp(ratios, 1.0 - self.eps_clip, 1.0 + self.eps_clip) * advantages_batch
+                policy_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * dist_entropy.mean()
 
-                policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() + self.policy.Actor.PolicyModule.penalty * 0.00001
                 # early stop: approx kl calculation
                 log_ratio = logprobs_prediction - logprobs_batch
                 approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
@@ -147,26 +151,49 @@ class CPO(Agent):
                 policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
                 # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
                 policy_grad_ += policy_grad # used to returing mean_pi_gradient at the end
-                grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
-                loss_grad = torch.cat([grad.view(-1) for grad in grads])
+                # grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
+                # loss_grad = torch.cat([grad.view(-1) for grad in grads])
                 # implement gradient normalizing if want here
 
+                # Zero gradients, perform a backward pass, and compute the gradients
+                self.optimizer_Actor.zero_grad()
+                policy_loss.backward(retain_graph=True)
+
+                # Extract the gradients computed by Adam
+                grads = []
+                for param in self.policy.Actor.parameters():
+                    if param.grad is not None:
+                        grads.append(param.grad.view(-1))
+                loss_grad = torch.cat(grads)
                 # finding the step direction / add direct hessian finding function here later. get the parameter from args
                 Fvp = Fvp_fim
                 stepdir = conjugate_gradients(Fvp, -loss_grad, 10)
                 # if gradient normalizing, normalize the step dir here
 
                 # findign cost loss
-                c_theta = ratios * cost_advantages_batch
-                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()+ self.policy.Actor.PolicyModule.penalty * 0.00001
+                # c_theta = ratios * cost_advantages_batch
+                # + self.policy.Actor.PolicyModule.penalty * 0.00001
+                # cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                surr1_cost = ratios * cost_advantages_batch
+                surr2_cost = torch.clamp(ratios, 1.0 - self.eps_clip, 1.0 + self.eps_clip) * cost_advantages_batch
+                cost_loss = -torch.min(surr1_cost, surr2_cost).mean() - self.entropy_coef * dist_entropy.mean()
+
 
 
                 #finding the cost step direction
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
-                cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) #a
-                cost_loss_grad = cost_loss_grad/torch.norm(cost_loss_grad)
-                # print('cost_loss_grad')
-                # print(cost_loss_grad)
+                cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) 
+                # Zero gradients, perform a backward pass, and compute the gradients for cost loss
+                # self.optimizer_Actor.zero_grad()
+                # cost_loss.backward()
+
+                # Extract the gradients computed by Adam for cost loss
+                # cost_grads = []
+                # for param in self.policy.Actor.parameters():
+                #     if param.grad is not None:
+                #         cost_grads.append(param.grad.view(-1))
+                # cost_loss_grad = torch.cat(cost_grads)
+                cost_loss_grad = cost_loss_grad / torch.norm(cost_loss_grad)
                 cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
 
                 # Define q, r, s
@@ -179,7 +206,7 @@ class CPO(Agent):
                 epsilon = 1e-6
                 s = s + epsilon
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
-                cc =  - constraint + self.d_k
+                cc =  constraint - self.d_k
                 lamda = 2*self.max_kl
 
                 #find optimal lambda_a and  lambda_b
@@ -230,15 +257,17 @@ class CPO(Agent):
                 # finding optimal step direction
                 if ((cc**2)/s - self.max_kl) > 0 and cc>0:
                     opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
+                    prev_params = get_flat_params_from(self.policy.Actor)
+                    new_params = prev_params + opt_stepdir
+                    set_flat_params_to(self.policy.Actor, new_params)
                 else:
-                    opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                    # opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                    self.optimizer_Actor.step()
                 
                 # trying without line search
-                # print("opt_stepdir - \n")
-                # print(opt_stepdir)
-                prev_params = get_flat_params_from(self.policy.Actor)
-                new_params = prev_params + opt_stepdir
-                set_flat_params_to(self.policy.Actor, new_params)
+                # prev_params = get_flat_params_from(self.policy.Actor)
+                # new_params = prev_params + opt_stepdir
+                # set_flat_params_to(self.policy.Actor, new_params)
 
                 #######
                 pol_count += 1
