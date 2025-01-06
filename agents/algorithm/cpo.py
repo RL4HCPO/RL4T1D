@@ -256,12 +256,14 @@ class CPO(Agent):
 
                 # finding optimal step direction
                 if ((cc**2)/s - self.max_kl) > 0 and cc>0:
+                    print('cost exeeded')
                     opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
                     prev_params = get_flat_params_from(self.policy.Actor)
                     new_params = prev_params + opt_stepdir
                     set_flat_params_to(self.policy.Actor, new_params)
                 else:
                     # opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                    print('cost not exceeded')
                     self.optimizer_Actor.step()
                 
                 # trying without line search
