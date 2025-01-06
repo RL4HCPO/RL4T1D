@@ -27,6 +27,7 @@ class Agent:
         self.total_interactions = args.total_interactions
         self.n_interactions_lr_decay = args.n_interactions_lr_decay
         self.n_val_trials = args.n_val_trials
+        self.agent = args.agent
 
         # The offset params above are for visual convenience of raw logs when going through worker logs which are saved as:
         # e.g., worker_10.csv, worker_5000.csv, workers with 5000+ are testing; workers with 6000+ are validation
@@ -94,7 +95,8 @@ class Agent:
             # self.LogExperiment.save(log_name='/experiment_summary', data=[[experiment_done, rollout, (t2 - t1), (t4 - t2), (t6 - t4)]])
 
             # when training complete conduct final validation: typically n=500.
-            if experiment_done:
+
+            if self.agent != 'ppo' and experiment_done:
                 self.evaluate()
 
     def evaluate(self):

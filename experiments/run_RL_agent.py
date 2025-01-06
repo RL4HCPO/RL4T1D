@@ -37,6 +37,12 @@ def set_agent_parameters(cfg):
         setup_folders(cfg)
         agent = PCPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
+    elif cfg.agent.agent == 'ppo_pcpo_ensemble':
+        from agents.algorithm.ppo import PPO
+        from agents.algorithm.pcpo import PCPO
+        setup_folders(cfg)
+
+
     # elif args.agent.agent == 'a2c':
     #     from agents.algorithm.a2c import A2C
     #     agent = A2C(args=args, load_model=False, actor_path='', critic_path='')
@@ -89,36 +95,60 @@ def set_agent_parameters(cfg):
 #         print('Please select an agent for the experiment. Hint: a2c, sac, ppo, g2p2c')
 #     return agent
 
-# def load_latest_checkpoint(experiment_dir):
-#     checkpoints_dir = os.path.join(experiment_dir, 'checkpointspcpo')
+def load_latest_checkpoint(experiment_dir):
+    checkpoints_dir = os.path.join(experiment_dir, 'checkpointspcpo')
     
-#     checkpoint_files = os.listdir(checkpoints_dir)
+    checkpoint_files = os.listdir(checkpoints_dir)
 
-#     actor_files = [f for f in checkpoint_files if '_Actor.pth' in f]
-#     critic_files = [f for f in checkpoint_files if '_Critic.pth' in f]
+    actor_files = [f for f in checkpoint_files if '_Actor.pth' in f]
+    critic_files = [f for f in checkpoint_files if '_Critic.pth' in f]
 
-#     if not actor_files or not critic_files:
-#         raise FileNotFoundError("No Actor or Critic checkpoints found!")
+    if not actor_files or not critic_files:
+        raise FileNotFoundError("No Actor or Critic checkpoints found!")
     
-#     def get_episode_number(filename):
-#         return int(filename.split('_')[1])
+    def get_episode_number(filename):
+        return int(filename.split('_')[1])
     
-#     actor_files.sort(key=get_episode_number, reverse=True)
-#     critic_files.sort(key=get_episode_number, reverse=True)
+    actor_files.sort(key=get_episode_number, reverse=True)
+    critic_files.sort(key=get_episode_number, reverse=True)
 
-#     latest_actor_file = os.path.join(checkpoints_dir, actor_files[0])
-#     latest_critic_file = os.path.join(checkpoints_dir, critic_files[0])
+    latest_actor_file = os.path.join(checkpoints_dir, actor_files[0])
+    latest_critic_file = os.path.join(checkpoints_dir, critic_files[0])
 
-#     print(f"Loaded Actor from: {latest_actor_file}")
-#     print(f"Loaded Critic from: {latest_critic_file}")
+    print(f"Loaded Actor from: {latest_actor_file}")
+    print(f"Loaded Critic from: {latest_critic_file}")
 
-#     return latest_actor_file, latest_critic_file
+    return latest_actor_file, latest_critic_file
+
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
+    if cfg.experiment.verbose:
+        print('\nExperiment Starting...')
+        print("\nOptions =================>")
+        print(vars(cfg))
+        print('\nDevice which the program run on:', cfg.experiment.device)
 
-    agent = set_agent_parameters(cfg)  # load agent - used for normal running
+    torch.manual_seed(cfg.experiment.seed)
+    random.seed(cfg.experiment.seed)
+    np.random.seed(cfg.experiment.seed)
 
+    # ppo run
+    cfg.agent = "ppo"
+    cfg.total_interactions = 400000
+    agent = set_agent_parameters(cfg)
+
+    agent.run() 
+
+    # pcpo run
+    cfg.agent = "pcpo"
+    experiment_dir = "../results/test"
+    experiment_dir_new = "../results/pcpo_new"
+    copy_folder(experiment_dir, experiment_dir_new)
+    actor, critic = load_latest_checkpoint(experiment_dir_new)
+    from agents.algorithm.pcpo import PCPO
+    setup_folders(cfg)
+    agent = PCPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path=actor, critic_path=critic)
 
     #run = wandb.init(entity=cfg.wandb.entity, project=cfg.wandb.project)
     # wandb.config = OmegaConf.to_container(
@@ -136,17 +166,7 @@ def main(cfg: DictConfig) -> None:
     # actor, critic = load_latest_checkpoint(experiment_dir_new)
 
     # agent = set_agent_parameters(cfg, actor, critic, True)
-    if cfg.experiment.verbose:
-        print('\nExperiment Starting...')
-        print("\nOptions =================>")
-        print(vars(cfg))
-        print('\nDevice which the program run on:', cfg.experiment.device)
-
-    #exit()
-
-    torch.manual_seed(cfg.experiment.seed)
-    random.seed(cfg.experiment.seed)
-    np.random.seed(cfg.experiment.seed)
+    
 
     agent.run()
 

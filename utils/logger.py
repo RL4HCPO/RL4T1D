@@ -39,9 +39,21 @@ def setup_folders(args: dict) -> None:  # create the folder which will save expe
 
 
 def copy_folder(src, dst):
-    for folders, subfolders, filenames in os.walk(src):
+    # Ensure destination directory exists
+    if not os.path.exists(dst):
+        os.makedirs(dst)
+    
+    # Walk through the source directory
+    for folder, subfolders, filenames in os.walk(src):
+        # Create corresponding folders in the destination
+        relative_path = os.path.relpath(folder, src)
+        destination_folder = os.path.join(dst, relative_path)
+        if not os.path.exists(destination_folder):
+            os.makedirs(destination_folder)
+        
+        # Copy files to the corresponding folder
         for filename in filenames:
-            shutil.copy(os.path.join(folders, filename), dst)
+            shutil.copy(os.path.join(folder, filename), destination_folder)
 
 
 def save_log(experiment_dir, log_name, file_name):
