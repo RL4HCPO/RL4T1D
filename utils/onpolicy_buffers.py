@@ -89,7 +89,20 @@ class RolloutBuffer:
             cadv[:, t] = lastcgaelam = delta + notlast* self.gamma * self.lambda_ *lastcgaelam
         return cadv.to(device=orig_device)
     
-    # define the compute cost function
+
+    # the compute cost function
+    
+    # def compute_cost_tensor(self):
+    #     orig_device = self.cost.device
+    #     cost_tensor = torch.zeros_like(self.cost, device=orig_device)
+    #     for t in reversed(range(self.n_step)):
+    #         if t == self.n_step - 1:
+    #             cost_tensor[:, t] = self.cost[:, t]
+    #         else:
+    #             cost_tensor[:, t] = self.cost[:, t] + self.gamma * cost_tensor[:, t + 1]
+    #     return cost_tensor   
+    
+
     def estimate_constraint_value(self):
         orig_device = self.cost.device
         assert orig_device == self.first_flag.device
@@ -114,6 +127,7 @@ class RolloutBuffer:
                 self.reward = self.reward_normaliser(self.reward, self.first_flag)
             self.adv, self.v_targ = self.compute_gae()  # # calc returns
             self.cadv = self.computer_gcae()
+            # self.cost = self.compute_cost_tensor()  # Compute cost tensor
 
         if self.return_type == 'average':
             self.reward = self.reward_normaliser(self.reward, self.first_flag, type='average')
@@ -180,6 +194,11 @@ class RolloutWorker:
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
+        # if cgm_target <= 70:
+        #     self.cost[self.ptr] = 1
+        # else:
+        #     self.cost[self.ptr] = 0
+        # # self.cost[self.ptr] = (obs[:, 0]).mean()
         self.ptr += 1
 
     def finish_path(self, final_v):

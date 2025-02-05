@@ -320,6 +320,51 @@ class CPO(Agent):
         self.model_logs[1], self.model_logs[2], self.model_logs[3], self.model_logs[4] = self.train_vf()
         self.LogExperiment.save(log_name='/model_log', data=[self.model_logs.detach().cpu().flatten().numpy()])
 
+def objective(trial):
+    # Suggest hyperparameters using Optuna for d_k, max_kl, and damping
+    d_k = trial.suggest_int('d_k', 10, 60)
+    max_kl = trial.suggest_uniform('max_kl', 0.001, 0.05)
+    damping = trial.suggest_uniform('damping', 0.01, 0.2)
+
+    # Update the args object with the suggested hyperparameters
+    args.d_k = d_k
+    args.max_kl = max_kl
+    args.damping = damping
+    args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')  # Ensure the device is set
+
+    # Instantiate the agent with updated hyperparameters
+    agent = CPO(args, env_args, load_model=False, actor_path=None, critic_path=None)
+    
+    # Run the agent and evaluate its performance (e.g., average reward)
+    reward = agent.run()  # Modify this to return the evaluation reward
+    
+    return reward  # Objective is to maximize reward
+
+# Optuna hyperparameter tuning
+if __name__ == '__main__':
+    # Initialize your arguments and environment arguments
+    args = Args()  # Replace with however you initialize your args object
+    env_args = EnvArgs()  # Initialize env_args similarly
+
+    # Set default values for args and env_args
+    args.pi_lr = 1e-4  # Default values
+    args.vf_lr = 1e-4
+    args.entropy_coef = 0.01
+    args.grad_clip = 0.5
+    args.eps_clip = 0.2
+    args.target_kl = 0.05
+    args.n_vf_epochs = 5
+    args.n_pi_epochs = 5
+    args.batch_size = 64
+    args.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Initialize Optuna study
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=100)
+
+    # Save and print the best hyperparameters
+    print(study.best_params)
+
     
 
 
