@@ -33,6 +33,7 @@ class Agent:
         self.training_agent_id_offset = 5  # 5, 6, 7, ... (5+n_training_workers)
         self.testing_agent_id_offset = 5000  # 5000, 5001, 5002, ... (5000+n_testing_workers)
         self.validation_agent_id_offset = 6000  # 6000, 6001, 6002, ... (6000+n_val_trials)
+        self.completed_interactions = 0
 
         if args.debug:
             self.n_testing_workers = 2
@@ -57,8 +58,8 @@ class Agent:
                           for i in range(self.n_testing_workers)]
 
         # start ppo learning
-        rollout, completed_interactions = 0, 0
-        while completed_interactions < self.total_interactions:  # steps * n_workers * epochs. 3000 is just a large number
+        rollout, self.completed_interactions = 0, 0
+        while self.completed_interactions < self.total_interactions:  # steps * n_workers * epochs. 3000 is just a large number
             tstart = time.perf_counter()
             # run training workers to collect data
             for i in range(self.n_training_workers):
@@ -73,20 +74,20 @@ class Agent:
                     testing_agents[i].rollout(policy=self.policy, buffer=None)  # these logs will be saved by the worker.
 
             # update the total number of completed interactions.
-            completed_interactions += (self.args.n_step * self.n_training_workers)
+            self.completed_interactions += (self.args.n_step * self.n_training_workers)
             rollout += 1
             gc.collect()  # garbage collector to clean unused objects.
 
             # decay lr and set entropy coeff to zero to stabilise the policy towards the end.
-            if completed_interactions > self.n_interactions_lr_decay:
+            if self.completed_interactions > self.n_interactions_lr_decay:
                 self.decay_lr()
 
-            experiment_done = True if completed_interactions > self.total_interactions else False
+            experiment_done = True if self.completed_interactions > self.total_interactions else False
 
             # logging
             #wandb.log({"Training Progress": (completed_interactions/self.total_interactions)*100})
             print('\n---------------------------------------------------------')
-            print('Training Progress: {:.2f}%, Elapsed time: {:.4f} minutes.'.format(min(100.00, (completed_interactions/self.total_interactions)*100),
+            print('Training Progress: {:.2f}%, Elapsed time: {:.4f} minutes.'.format(min(100.00, (self.completed_interactions/self.total_interactions)*100),
                                                                                      (time.perf_counter() - tstart)/60))
             print('---------------------------------------------------------')
 

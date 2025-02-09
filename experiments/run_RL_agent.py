@@ -31,11 +31,15 @@ def set_agent_parameters(cfg):
         setup_folders(cfg)
         agent = CPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
-
     elif cfg.agent.agent == 'pcpo':
         from agents.algorithm.pcpo import PCPO
         setup_folders(cfg)
         agent = PCPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
+    
+    elif cfg.agent.agent == 'combined':
+        from agents.algorithm.combined import combined
+        setup_folders(cfg)
+        agent = combined(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
     # elif args.agent.agent == 'a2c':
     #     from agents.algorithm.a2c import A2C
@@ -116,7 +120,6 @@ def set_agent_parameters(cfg):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
-
     agent = set_agent_parameters(cfg)  # load agent - used for normal running
 
 
