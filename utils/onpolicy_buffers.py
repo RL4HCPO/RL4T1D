@@ -183,9 +183,9 @@ class RolloutWorker:
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
         if ((obs[:, 0]).mean() < 0 ):
-            self.cost[self.ptr] = (obs[:, 0]).mean()
+            self.cost[self.ptr] = -(obs[:, 0]).mean()
         else:
-            self.cost[self.ptr] = -0.0001
+            self.cost[self.ptr] = 0.0001
         # self.cost[self.ptr] = (obs[:, 0]).mean()
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act

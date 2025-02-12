@@ -76,11 +76,13 @@ class Agent:
             # update the total number of completed interactions.
             self.completed_interactions += (self.args.n_step * self.n_training_workers)
             rollout += 1
+            # print('completed interactions', self.completed_interactions)
             gc.collect()  # garbage collector to clean unused objects.
 
             # decay lr and set entropy coeff to zero to stabilise the policy towards the end.
-            if self.completed_interactions > self.n_interactions_lr_decay:
+            if self.completed_interactions == self.n_interactions_lr_decay:
                 self.decay_lr()
+                self.n_interactions_lr_decay += 2500
 
             experiment_done = True if self.completed_interactions > self.total_interactions else False
 
@@ -134,8 +136,8 @@ class Agent:
 
     def decay_lr(self):
         self.entropy_coef = 0  # self.entropy_coef / 100
-        self.pi_lr = self.pi_lr / 10
-        self.vf_lr = self.vf_lr / 10
+        self.pi_lr = self.pi_lr - (1/320)
+        self.vf_lr = self.vf_lr - (1/320)
         for param_group in self.optimizer_Actor.param_groups:
             param_group['lr'] = self.pi_lr
         for param_group in self.optimizer_Critic.param_groups:

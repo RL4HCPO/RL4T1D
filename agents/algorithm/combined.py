@@ -43,6 +43,9 @@ class combined(Agent):
         self.entropy_coef = args.entropy_coef
         self.eps_clip = args.eps_clip
         self.target_kl = args.target_kl
+        self.d_k = args.d_k
+        self.max_kl = args.max_kl
+        self.damping = args.damping
 
         # Logging
         self.model_logs = torch.zeros(7, device=self.device)
@@ -98,83 +101,239 @@ class combined(Agent):
         print('The policy loss is: {}'.format(temp_loss_log))
         return mean_pi_grad, temp_loss_log
 
-    def train_pi_PCPO(self):
-        print('Running PCPO Policy Update...')
+    def train_pi_CPO(self):
+        print('Running CPO Policy Update...')
 
-        # Policy optimization with constraint satisfaction
-        for i in range(self.args.n_pi_epochs):
-            states_batch = self.rollout_buffer['states']
-            actions_batch = self.rollout_buffer['action']
-            logprobs_batch = self.rollout_buffer['log_prob_action']
-            advantages_batch = self.rollout_buffer['advantage']
-            cost_adv_batch = self.rollout_buffer['cost_advantage']
+        # conjugate gradient decent
+        def conjugate_gradients(Avp_f, b, nsteps, rdotr_tol=1e-10):
+            x = torch.zeros(b.size(), device=b.device)
+            r = b.clone()
+            p = b.clone()
+            rdotr = torch.dot(r, r)
+            for i in range(nsteps):
+                Avp = Avp_f(p)
+                alpha = rdotr / torch.dot(p, Avp)
+                x += alpha * p
+                r -= alpha * Avp
+                new_rdotr = torch.dot(r, r)
+                betta = new_rdotr / rdotr
+                p = r + betta * p
+                rdotr = new_rdotr
+                if rdotr < rdotr_tol:
+                    break
+            return x
+    
+        # implementing fisher information matrix
+        def Fvp_direct(v):
+            kl = self.policy.Actor.get_kl(states_batch)
+            kl = kl.mean()
 
-            # Normalize the advantages and cost advantages
-            advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-5)
-            cost_adv_batch = (cost_adv_batch - cost_adv_batch.mean()) / (cost_adv_batch.std() + 1e-5)
+            grads = torch.autograd.grad(kl, self.policy.Actor.parameters(), create_graph=True)
+            flat_grad_kl = torch.cat([grad.view(-1) for grad in grads])
 
-            logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
-            ratios = torch.exp(logprobs_prediction - logprobs_batch).squeeze()
+            kl_v = (flat_grad_kl * v).sum()
+            grads = torch.autograd.grad(kl_v, self.policy.Actor.parameters())
+            flat_grad_grad_kl = torch.cat([grad.contiguous().view(-1) for grad in grads]).detach()
 
-            # Policy loss and constraint satisfaction
-            r_theta = ratios * advantages_batch
-            policy_loss = -r_theta.mean() - self.args.entropy_coef * dist_entropy.mean()
+            return flat_grad_grad_kl + v * self.damping
+    
+        def Fvp_fim(v):
+            with torch.backends.cudnn.flags(enabled=False):
+                M, mu, info = self.policy.Actor.get_fim(states_batch)
+                mu = mu.view(-1)
+                filter_input_ids = set([info['std_id']])
 
-            # Project the policy update to satisfy the constraint
-            cost_theta = ratios * cost_adv_batch
-            cost_loss = -cost_theta.mean()
-            print("cost loss: ", cost_loss, " max constraint violation: ",self.max_constraint_violation)
-            # If cost constraint is violated, perform projection
-            if cost_loss > self.max_constraint_violation:
-                print("cost loss is higher")
-                # Projection mechanism to maintain feasible updates
-                projected_step = self.project_policy_update(policy_loss, cost_loss)
-                set_flat_params_to(self.policy.Actor, projected_step)
+                t = torch.ones(mu.size(), requires_grad=True, device=mu.device)
+                mu_t = (mu * t).sum()
+                Jt = compute_flat_grad(mu_t, self.policy.Actor.parameters(), filter_input_ids=filter_input_ids, create_graph=True)
+                Jtv = (Jt * v).sum()
+                Jv = torch.autograd.grad(Jtv, t)[0]
+                MJv = M * Jv.detach()
+                mu_MJv = (MJv * mu).sum()
+                JTMJv = compute_flat_grad(mu_MJv, self.policy.Actor.parameters(), filter_input_ids=filter_input_ids, create_graph=True).detach()
+                JTMJv /= states_batch.shape[0]
+                std_index = info['std_index']
+                JTMJv[std_index: std_index + M.shape[0]] += 2 * v[std_index: std_index + M.shape[0]]
+                return JTMJv + v * self.damping
 
-            self.optimizer_Actor.zero_grad()
-            policy_loss.backward()
-            self.optimizer_Actor.step()
-        print("policy_loss: ",policy_loss)
-        return policy_loss
+        temp_loss_log = torch.zeros(1, device=self.device)
+        policy_grad, pol_count = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        continue_pi_training, buffer_len = True, self.rollout_buffer['len']
+        constraint = self.rollout_buffer['constraint']
+        policy_grad_ = 0
+        for i in range(self.train_pi_iters):
+            start_idx, n_batch = 0, 0
+            while start_idx < buffer_len:
+                n_batch += 1
+                end_idx = min(start_idx + self.batch_size, buffer_len)
 
-    def project_policy_update(self, policy_loss, cost_loss):
-        """
-        Implement projection of policy updates to ensure constraint satisfaction.
-        Typically, this involves solving a quadratic programming problem where
-        the update direction is projected into the feasible region.
-        """
-        # Get current policy parameters
-        prev_params = get_flat_params_from(self.policy.Actor)
+                states_batch = self.rollout_buffer['states'][start_idx:end_idx, :, :]
+                actions_batch = self.rollout_buffer['action'][start_idx:end_idx, :]
+                logprobs_batch = self.rollout_buffer['log_prob_action'][start_idx:end_idx, :]
+                advantages_batch = self.rollout_buffer['advantage'][start_idx:end_idx]
+                advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-5)
+                cost_advantages_batch = self.rollout_buffer['cost_advantage'][start_idx:end_idx]
+                cost_advantages_batch = (cost_advantages_batch - cost_advantages_batch.mean()) / (cost_advantages_batch.std() + 1e-5)
+
+                # print(i)
+                logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
+                ratios = torch.exp(logprobs_prediction - logprobs_batch)
+                ratios = ratios.squeeze()
+                # r_theta = ratios * advantages_batch
+                # + self.policy.Actor.PolicyModule.penalty * 0.00001
+                # policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() 
+                surr1 = ratios * advantages_batch
+                surr2 = torch.clamp(ratios, 1.0 - self.eps_clip, 1.0 + self.eps_clip) * advantages_batch
+                policy_loss = -torch.min(surr1, surr2).mean() - self.entropy_coef * dist_entropy.mean()
+
+                # early stop: approx kl calculation
+                log_ratio = logprobs_prediction - logprobs_batch
+                approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
+                if approx_kl > 1.5 * self.target_kl:
+                    if self.args.verbose:
+                        print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
+                    continue_pi_training = False
+                    break
+
+                if torch.isnan(policy_loss):  # for debugging only!
+                    print('policy loss: {}'.format(policy_loss))
+                    exit()
+
+                temp_loss_log += policy_loss.detach()
+                policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
+                # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
+                policy_grad_ += policy_grad # used to returing mean_pi_gradient at the end
+                # grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
+                # loss_grad = torch.cat([grad.view(-1) for grad in grads])
+                # implement gradient normalizing if want here
+
+                # Zero gradients, perform a backward pass, and compute the gradients
+                self.optimizer_Actor.zero_grad()
+                policy_loss.backward(retain_graph=True)
+
+                # Extract the gradients computed by Adam
+                grads = []
+                for param in self.policy.Actor.parameters():
+                    if param.grad is not None:
+                        grads.append(param.grad.view(-1))
+                loss_grad = torch.cat(grads)
+                # finding the step direction / add direct hessian finding function here later. get the parameter from args
+                Fvp = Fvp_fim
+                stepdir = conjugate_gradients(Fvp, -loss_grad, 10)
+                # if gradient normalizing, normalize the step dir here
+
+                # findign cost loss
+                # c_theta = ratios * cost_advantages_batch
+                # + self.policy.Actor.PolicyModule.penalty * 0.00001
+                # cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                surr1_cost = ratios * cost_advantages_batch
+                surr2_cost = torch.clamp(ratios, 1.0 - self.eps_clip, 1.0 + self.eps_clip) * cost_advantages_batch
+                cost_loss = -torch.min(surr1_cost, surr2_cost).mean() - self.entropy_coef * dist_entropy.mean()
+
+
+
+                #finding the cost step direction
+                cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
+                cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) 
+                # Zero gradients, perform a backward pass, and compute the gradients for cost loss
+                # self.optimizer_Actor.zero_grad()
+                # cost_loss.backward()
+
+                # Extract the gradients computed by Adam for cost loss
+                # cost_grads = []
+                # for param in self.policy.Actor.parameters():
+                #     if param.grad is not None:
+                #         cost_grads.append(param.grad.view(-1))
+                # cost_loss_grad = torch.cat(cost_grads)
+                cost_loss_grad = cost_loss_grad / torch.norm(cost_loss_grad)
+                cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
+
+                # Define q, r, s
+                p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
+                q = -loss_grad.dot(stepdir) #g^T.H^-1.g
+                r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
+                s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
+
+            
+                epsilon = 1e-6
+                s = s + epsilon
+                self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
+                cc =  constraint - self.d_k
+                lamda = 2*self.max_kl
+
+                #find optimal lambda_a and  lambda_b
+                A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s))
+                B = torch.sqrt(q/self.max_kl)
         
-        # Compute the gradients for policy loss
-        grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
-        flat_grad = torch.cat([grad.view(-1) for grad in grads]).detach().cpu().numpy()
+                
+                cc += epsilon
+                if cc>0:
+                    opt_lam_a = torch.max(r/cc,A)
+                    opt_lam_b = torch.max(torch.zeros_like(A),torch.min(B,r/cc))
+                else: 
+                    
+                    opt_lam_b = torch.max(r/cc,B)
+                    
+                    opt_lam_a = torch.max(torch.zeros_like(A),torch.min(A,r/cc))
+                    
+                
+                #define f_a(\lambda) and f_b(\lambda)
+                def f_a_lambda(lamda):
+                    lamda = lamda + epsilon
+                    a = ((r**2)/s - q)/(2*lamda)
+                    b = lamda*((cc**2)/s - self.max_kl)/2
+                    c = - (r*cc)/s
+                    return a+b+c
+                
+                def f_b_lambda(lamda):
+                    lamda = lamda + epsilon
+                    a = -(q/lamda + lamda*self.max_kl)/2
+                    return a   
+                
+                #find values of optimal lambdas 
+                opt_f_a = f_a_lambda(opt_lam_a)
+                opt_f_b = f_b_lambda(opt_lam_b)
 
-        # Define the objective function for quadratic programming
-        def objective_fn(step_direction):
-            return 0.5 * np.dot(step_direction, step_direction)  # Minimize step direction norm (Euclidean distance)
-        
-        # Define constraint: cost_loss <= max_constraint_violation
-        def constraint_fn(step_direction):
-            return cost_loss.item() + np.dot(flat_grad, step_direction) - self.max_constraint_violation
+                if opt_f_a > opt_f_b:
+                    opt_lambda = opt_lam_a
+                else:
+                    opt_lambda = opt_lam_b
+                        
+                #find optimal nu
+                nu = (opt_lambda*cc - r)/s 
+                if nu>0:
+                    opt_nu = nu 
+                else:
+                    opt_nu = 0
 
-        # Set up bounds for the step direction (if necessary)
-        bounds = [(None, None) for _ in flat_grad]
+                # finding optimal step direction
+                if ((cc**2)/s - self.max_kl) > 0 and cc>0:
+                    print('cost exeeded')
+                    opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
+                    prev_params = get_flat_params_from(self.policy.Actor)
+                    new_params = prev_params + (opt_stepdir * self.pi_lr)
+                    set_flat_params_to(self.policy.Actor, new_params)
+                else:
+                    # opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                    print('cost not exceeded')
+                    print(constraint)
+                    self.optimizer_Actor.step()
+                
+                # trying without line search
+                # prev_params = get_flat_params_from(self.policy.Actor)
+                # new_params = prev_params + opt_stepdir
+                # set_flat_params_to(self.policy.Actor, new_params)
 
-        # Solve the quadratic programming problem to project the update
-        result = opt.minimize(
-            objective_fn,
-            np.zeros_like(flat_grad),
-            method='SLSQP',
-            bounds=bounds,
-            constraints={'type': 'ineq', 'fun': constraint_fn}
-        )
+                #######
+                pol_count += 1
+                start_idx += self.batch_size
 
-        # Extract the optimized step direction and apply it to the current parameters
-        step_direction = result.x
-        projected_step = prev_params + torch.tensor(step_direction).to(self.device)
+            if not continue_pi_training:
+                break
+        mean_pi_grad = policy_grad_ / pol_count if pol_count != 0 else 0
+        print('The policy loss is: {}'.format(temp_loss_log))
+        return mean_pi_grad, temp_loss_log
 
-        return projected_step
 
     def train_vf(self):
         print('Running Value Function Update...')
@@ -205,11 +364,11 @@ class combined(Agent):
     def update(self):
         self.rollout_buffer = self.RolloutBuffer.prepare_rollout_buffer()
         print("rollout buffer done")
-        if(self.completed_interactions< 400000):
+        if(self.completed_interactions % 20480 != 0):
             print(self.completed_interactions)
             self.model_logs[0], self.model_logs[5] = self.train_pi_PPO()
         else:
-            self.model_logs[0] = self.train_pi_PCPO()
+            self.model_logs[0], self.model_logs[5] = self.train_pi_CPO()
         print("pi done")
         self.model_logs[1], self.model_logs[2] = self.train_vf()
         self.LogExperiment.save(log_name='/model_log', data=[self.model_logs.detach().cpu().flatten().numpy()])
