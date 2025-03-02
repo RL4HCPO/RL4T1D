@@ -7,7 +7,7 @@ rnn_directions: 1
 bidirectional: False
 
 # parameters for RL discounting strategies
-return_type: 'average'   # discount | average; is average gamma and lamda -> 1.
+return_type: 'discount'   # changed from 'average' to 'discount' for SCPO
 gamma: 0.99
 lambda_: 0.95
 
@@ -26,6 +26,11 @@ vf_lr: 3.e-4
 batch_size: 1024
 n_pi_epochs: 5
 n_vf_epochs: 5
+
+# SCPO-Specific Parameters
+lambda_c: 0.01          # Lagrange multiplier for cost penalty
+cost_limit: 10          # Maximum allowable cost per trajectory
+cost_line_search: True  # Apply cost-constrained line search
 
 # phase2: aux model learning
 aux_mode: 'dual'  # refactor
@@ -60,8 +65,6 @@ max_test_epi_len: 288  # testing conducted for 1 day: 12 steps/hr * 24 hours
 
 # validation
 n_val_trials: 500
-
-
 
 # TODO: deprecated, refactor
 kl: 1 # experimenting KL implementation

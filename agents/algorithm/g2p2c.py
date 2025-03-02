@@ -63,27 +63,43 @@ class G2P2C(PPO):
 
     def train_MCTS_planning(self):
         print('Running Planning Update...')
+        
         planning_loss_log = torch.zeros(1, device=self.device)
         planning_grad, count = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         continue_training, buffer_len = True, self.rollout_buffer['len']
+        
+        lambda_c = self.args.lambda_c  # Cost penalty multiplier
+        
         for i in range(self.n_plan_epochs):
             start_idx, n_batch = 0, 0
             while start_idx < buffer_len:
                 n_batch += 1
                 end_idx = min(start_idx + self.plan_batch_size, buffer_len)
                 old_states_batch = self.rollout_buffer['states'][start_idx:end_idx, :, :]
+                cost_return_batch = self.rollout_buffer['cost_return'][start_idx:end_idx, :]  # J_Di
+
                 self.optimizer_Actor.zero_grad()
                 rew_norm_var = (self.buffer.reward_normaliser.ret_rms.var).cpu().numpy()
                 expert_loss = torch.zeros(1, device=self.device)
+
                 for exp_iter in range(0, old_states_batch.shape[0]):
                     batched_states = old_states_batch[exp_iter].repeat(self.n_planning_simulations, 1, 1)
+                    
+                    # Expert rollout search
                     expert_pi, mu, sigma, terminal_s, Gt = self.policy.Actor.expert_search(batched_states, rew_norm_var, mode='batch')
                     V_terminal = self.policy.evaluate_critic(terminal_s, action=None, cgm_pred=False)
-                    returns_batch = (Gt + V_terminal.unsqueeze(1) * (self.gamma ** self.args.planning_n_step))
+
+                    # Compute cost-aware objective
+                    returns_batch = (Gt + V_terminal.unsqueeze(1) * (self.gamma ** self.args.planning_n_step)) - lambda_c * cost_return_batch[exp_iter]
+                    
+                    # Select best rollout balancing reward & cost
                     _, index = torch.max(returns_batch, 0)
                     index = index[0]
                     dst = self.distribution(mu[index], sigma[index])
-                    expert_loss += -dst.log_prob(expert_pi[index].detach())
+
+                    # Compute planning loss with SCPO penalty
+                    expert_loss += -dst.log_prob(expert_pi[index].detach()) + lambda_c * cost_return_batch[exp_iter].mean()
+
                 expert_loss = expert_loss / (old_states_batch.shape[0])
                 expert_loss.backward()
                 planning_grad += torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
@@ -91,27 +107,37 @@ class G2P2C(PPO):
                 count += 1
                 start_idx += self.plan_batch_size
                 planning_loss_log += expert_loss.detach()
+
             if not continue_training:
                 break
+
         mean_pi_grad = planning_grad / count if count != 0 else 0
         print('Successful Planning Update')
         return mean_pi_grad, planning_loss_log
 
+
     def train_aux(self):
         print('Running aux update...')
         self.AuxiliaryBuffer.update_targets(self.policy)
+        
         aux_val_grad, aux_pi_grad = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         aux_val_loss_log, aux_val_count = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
         aux_pi_loss_log, aux_pi_count = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        
         buffer_len = self.AuxiliaryBuffer.old_states.shape[0]
         rand_perm = torch.randperm(buffer_len)
+
+        # Shuffle batch data
         state = self.AuxiliaryBuffer.old_states[rand_perm, :, :]  # torch.Size([batch, n_steps, features])
         cgm_target = self.AuxiliaryBuffer.cgm_target[rand_perm]
         actions_old = self.AuxiliaryBuffer.actions[rand_perm]
         # new target old_logprob and value are calc based on networks trained after pi and vf
         logprob_old = self.AuxiliaryBuffer.logprob[rand_perm]
         value_target = self.AuxiliaryBuffer.value_target[rand_perm]
+        cost_return = self.AuxiliaryBuffer.cost_return[rand_perm]  # J_Di
 
+        lambda_c = self.args.lambda_c  # Cost penalty multiplier
+        
         start_idx = 0
         for i in range(self.aux_iterations):
             while start_idx < buffer_len:
@@ -121,21 +147,26 @@ class G2P2C(PPO):
                 value_target_batch = value_target[start_idx:end_idx]
                 logprob_old_batch = logprob_old[start_idx:end_idx]
                 actions_old_batch = actions_old[start_idx:end_idx]
+                cost_return_batch = cost_return[start_idx:end_idx]  # SCPO Cost Return
 
-                # Trains the Glucose model in the critic.
+                # 🟢 **Update Critic (Cost-Aware)**
                 if self.aux_mode == 'dual' or self.aux_mode == 'vf_only':
                     self.optimizer_aux_vf.zero_grad()
                     value_predict, cgm_mu, cgm_sigma, _ = self.policy.evaluate_critic(state_batch, actions_old_batch, cgm_pred=True)
-                    # Maximum Log Likelihood
+                    
+                    # Compute SCPO Value Loss
                     dst = self.distribution(cgm_mu, cgm_sigma)
-                    aux_vf_loss = -dst.log_prob(cgm_target_batch).mean() + self.aux_vf_coef * self.value_criterion(value_predict, value_target_batch)
+                    aux_vf_loss = (-dst.log_prob(cgm_target_batch).mean() +
+                                    self.aux_vf_coef * self.value_criterion(value_predict, value_target_batch) +
+                                    lambda_c * ((cost_return_batch - value_predict) ** 2).mean())  # SCPO cost penalty
+                    
                     aux_vf_loss.backward()
                     aux_val_grad += torch.nn.utils.clip_grad_norm_(self.policy.Critic.parameters(), self.grad_clip)
                     self.optimizer_aux_vf.step()
                     aux_val_loss_log += aux_vf_loss.detach()
                     aux_val_count += 1
 
-                # Trains the Glucose model in the actor.
+                # 🔵 **Update Actor (Cost-Aware)**
                 if self.aux_mode == 'dual' or self.aux_mode == 'pi_only':
                     self.optimizer_aux_pi.zero_grad()
                     logprobs, dist_entropy, cgm_mu, cgm_sigma, _ = self.policy.evaluate_actor(state_batch, actions_old_batch, mode="aux")
@@ -147,8 +178,7 @@ class G2P2C(PPO):
                         print(actions_old_batch)
                         print(state_batch.shape)
                         print(actions_old_batch.shape)
-
-                    # experimenting with KL divegrence implementations, kl = 1 is used!
+                    # Compute KL divergence (stability check)
                     if self.args.kl == 0:
                         kl_div = f_kl(logprob_old_batch, logprobs)
                     elif self.args.kl == 1:
@@ -158,9 +188,12 @@ class G2P2C(PPO):
                     else:
                         kl_div = r_kl(logprobs, logprob_old_batch)
 
-                    # maximum liklihood est
+                    # Compute SCPO Actor Loss
                     dst = self.distribution(cgm_mu, cgm_sigma)
-                    aux_pi_loss = -dst.log_prob(cgm_target_batch).mean() + self.aux_pi_coef * kl_div
+                    aux_pi_loss = (-dst.log_prob(cgm_target_batch).mean() + 
+                                    self.aux_pi_coef * kl_div + 
+                                    lambda_c * cost_return_batch.mean())  # SCPO cost penalty
+                    
                     aux_pi_loss.backward()
                     aux_pi_grad += torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
                     self.optimizer_aux_pi.step()
@@ -168,8 +201,10 @@ class G2P2C(PPO):
                     aux_pi_count += 1
 
                 start_idx += self.aux_batch_size
+
         if self.args.verbose:
-            print('Successful Auxilliary Update.')
+            print('Successful Auxiliary Update.')
+        
         return aux_val_grad / aux_val_count, aux_val_loss_log, aux_pi_grad / aux_pi_count, aux_pi_loss_log
 
     def get_model_accuracy(self):
@@ -208,10 +243,17 @@ class G2P2C(PPO):
         print('The RMSE error is > 15 mg/dL aborting planning phase')
         if self.start_planning:
             plan_pi_grad, plan_loss = self.train_MCTS_planning()
+            
+        # Log SCPO-Specific Cost Metrics
+        cost_return = self.rollout_buffer['cost_return']
+        avg_cost_return = torch.mean(cost_return).detach().cpu().item()
+        max_cost = torch.max(cost_return).detach().cpu().item()        
+        print(f'Avg Cost Return (J_Di): {avg_cost_return}, Max Cost: {max_cost}')
 
         data = dict(policy_grad=pi_grad, policy_loss=pi_loss, value_grad=vf_grad, value_loss=vf_loss,
                     explained_var=explained_var, true_var=true_var, aux_val_grad=aux_val_grad, aux_val_loss= aux_val_loss,
-                    aux_pi_grad=aux_pi_grad, aux_pi_loss=aux_pi_loss, plan_pi_grad=plan_pi_grad, plan_loss=plan_loss, RMSE=RMSE)
+                    aux_pi_grad=aux_pi_grad, aux_pi_loss=aux_pi_loss, plan_pi_grad=plan_pi_grad, plan_loss=plan_loss, RMSE=RMSE,
+                    avg_cost_return=avg_cost_return, max_cost=max_cost)
         return {k: (v.detach().cpu().flatten().numpy()[0] if isinstance(v, torch.Tensor) else v) for k, v in data.items()}
 
 
