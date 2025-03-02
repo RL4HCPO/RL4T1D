@@ -68,6 +68,9 @@ class PPO(Agent):
 
                 # Compute policy ratios
                 ratios = torch.exp(logprobs_prediction - logprobs_batch).squeeze()
+                
+                # Compute SCPO cost advantage contribution
+                cost_advantage_contribution = torch.mean(logprobs_prediction * advantage_cost_batch)
 
                 # Compute PPO clipped policy loss
                 r_theta = ratios * advantages_batch
@@ -75,7 +78,7 @@ class PPO(Agent):
                 policy_loss = -torch.min(r_theta, r_theta_clip).mean()
 
                 # Compute SCPO cost loss
-                cost_loss = (ratios * advantage_cost_batch).mean()
+                cost_loss = (ratios * advantage_cost_batch).mean() + cost_advantage_contribution
 
                 # Compute final SCPO loss with Lagrange multiplier
                 total_loss = policy_loss + lambda_c * cost_loss - self.entropy_coef * dist_entropy.mean()
@@ -147,11 +150,11 @@ class PPO(Agent):
                 # Compute Cost Value Loss (SCPO Constraint)
                 cost_loss = self.value_criterion(value_prediction, cost_target)
 
-                # Incorporate cost-aware advantage correction
-                advantage_cost_correction = torch.mean((value_prediction - cost_target) * advantage_cost_batch)
+                # Compute cost-aware advantage correction
+                cost_advantage_contribution = torch.mean((value_prediction - cost_target) * advantage_cost_batch)
 
                 # Final SCPO Value Function Loss
-                total_loss = value_loss + lambda_c * cost_loss + lambda_c * advantage_cost_correction
+                total_loss = value_loss + lambda_c * cost_loss + lambda_c * cost_advantage_contribution
 
                 # Backpropagation
                 total_loss.backward()
