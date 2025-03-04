@@ -134,7 +134,7 @@ class G2P2C(PPO):
         # new target old_logprob and value are calc based on networks trained after pi and vf
         logprob_old = self.AuxiliaryBuffer.logprob[rand_perm]
         value_target = self.AuxiliaryBuffer.value_target[rand_perm]
-        cost_return = self.AuxiliaryBuffer.cost_return[rand_perm]  # J_Di
+        adv_cost = self.AuxiliaryBuffer.advantage_cost[rand_perm]  
 
         lambda_c = self.args.lambda_c  # Cost penalty multiplier
         
@@ -147,18 +147,18 @@ class G2P2C(PPO):
                 value_target_batch = value_target[start_idx:end_idx]
                 logprob_old_batch = logprob_old[start_idx:end_idx]
                 actions_old_batch = actions_old[start_idx:end_idx]
-                cost_return_batch = cost_return[start_idx:end_idx]  # SCPO Cost Return
+                adv_cost_batch = adv_cost[start_idx:end_idx]
 
-                # 🟢 **Update Critic (Cost-Aware)**
+                # 🟢 Update Critic (Cost-Aware)
                 if self.aux_mode == 'dual' or self.aux_mode == 'vf_only':
                     self.optimizer_aux_vf.zero_grad()
                     value_predict, cgm_mu, cgm_sigma, _ = self.policy.evaluate_critic(state_batch, actions_old_batch, cgm_pred=True)
                     
-                    # Compute SCPO Value Loss
+                    # Compute SCPO Value Loss using Advantage Cost (A_Di)
                     dst = self.distribution(cgm_mu, cgm_sigma)
                     aux_vf_loss = (-dst.log_prob(cgm_target_batch).mean() +
                                     self.aux_vf_coef * self.value_criterion(value_predict, value_target_batch) +
-                                    lambda_c * ((cost_return_batch - value_predict) ** 2).mean())  # SCPO cost penalty
+                                    lambda_c * ((adv_cost_batch - value_predict) ** 2).mean())
                     
                     aux_vf_loss.backward()
                     aux_val_grad += torch.nn.utils.clip_grad_norm_(self.policy.Critic.parameters(), self.grad_clip)
@@ -166,7 +166,7 @@ class G2P2C(PPO):
                     aux_val_loss_log += aux_vf_loss.detach()
                     aux_val_count += 1
 
-                # 🔵 **Update Actor (Cost-Aware)**
+                # 🔵 Update Actor (Cost-Aware)
                 if self.aux_mode == 'dual' or self.aux_mode == 'pi_only':
                     self.optimizer_aux_pi.zero_grad()
                     logprobs, dist_entropy, cgm_mu, cgm_sigma, _ = self.policy.evaluate_actor(state_batch, actions_old_batch, mode="aux")
@@ -188,11 +188,11 @@ class G2P2C(PPO):
                     else:
                         kl_div = r_kl(logprobs, logprob_old_batch)
 
-                    # Compute SCPO Actor Loss
+                    # Compute SCPO Actor Loss using Advantage Cost (A_Di)
                     dst = self.distribution(cgm_mu, cgm_sigma)
                     aux_pi_loss = (-dst.log_prob(cgm_target_batch).mean() + 
                                     self.aux_pi_coef * kl_div + 
-                                    lambda_c * cost_return_batch.mean())  # SCPO cost penalty
+                                    lambda_c * adv_cost_batch.mean())
                     
                     aux_pi_loss.backward()
                     aux_pi_grad += torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
@@ -231,6 +231,28 @@ class G2P2C(PPO):
         aux_val_grad, aux_val_loss, aux_pi_grad, aux_pi_loss, plan_pi_grad, plan_loss, RMSE = 0, 0, 0, 0, 0, 0, 0
         self.rollout_buffer = self.buffer.get(AuxiliaryBuffer=self.AuxiliaryBuffer)
         RMSE = self.get_model_accuracy()
+        
+        # Debugging: Print buffer content details
+        print("\n🔍 DEBUG: Rollout Buffer Contents (With Statistics & Sample Values)")
+        
+        # List of tensors to analyze
+        keys_to_check = ["advantage", "direct_cost", "cost_return", "advantage_cost"]
+
+        for key, value in self.rollout_buffer.items():
+            if isinstance(value, torch.Tensor):
+                print(f"\n🔹 {key}: Shape = {value.shape}, dtype = {value.dtype}")
+
+                # Print detailed statistics for cost-related tensors
+                if key in keys_to_check:
+                    print(f"   ↪ Min: {value.min().item():.6f}, Max: {value.max().item():.6f}")
+                    print(f"   ↪ Mean: {value.mean().item():.6f}, Std: {value.std().item():.6f}")
+
+                    # Extract and print first 10–20 values
+                    num_samples = min(20, value.numel())  # Show up to 20 values
+                    sample_values = value.flatten()[:num_samples].tolist()
+                    print(f"   ↪ Sample Values ({num_samples}): {sample_values}")
+            else:
+                print(f"\n🔹 {key}: {value}")
 
         pi_grad, pi_loss = self.train_pi()
         vf_grad, vf_loss, explained_var, true_var = self.train_vf()
@@ -252,8 +274,7 @@ class G2P2C(PPO):
 
         data = dict(policy_grad=pi_grad, policy_loss=pi_loss, value_grad=vf_grad, value_loss=vf_loss,
                     explained_var=explained_var, true_var=true_var, aux_val_grad=aux_val_grad, aux_val_loss= aux_val_loss,
-                    aux_pi_grad=aux_pi_grad, aux_pi_loss=aux_pi_loss, plan_pi_grad=plan_pi_grad, plan_loss=plan_loss, RMSE=RMSE,
-                    avg_cost_return=avg_cost_return, max_cost=max_cost)
+                    aux_pi_grad=aux_pi_grad, aux_pi_loss=aux_pi_loss, plan_pi_grad=plan_pi_grad, plan_loss=plan_loss, RMSE=RMSE)
         return {k: (v.detach().cpu().flatten().numpy()[0] if isinstance(v, torch.Tensor) else v) for k, v in data.items()}
 
 

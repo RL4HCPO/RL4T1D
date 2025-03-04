@@ -61,9 +61,10 @@ class RolloutBuffer:
         # Only used for G2P2C
         self.cgm_target[training_agent_index] = data['cgm_target']
 
-    def compute_gae(self):  # TODO: move to different script, optimise/resolve moving across devices back and forth.
+    def compute_gae(self):
         """
-        Compute GAE (Generalized Advantage Estimation) for both reward and cost (SCPO & G2P2C).
+        Compute Generalized Advantage Estimation (GAE) for both reward and cost (SCPO).
+        Normalizes cost advantage to prevent large fluctuations.
         """
         orig_device = self.v_pred.device
         assert orig_device == self.reward.device == self.first_flag.device
@@ -93,14 +94,13 @@ class RolloutBuffer:
         lastgaelam_cost = 0
         for t in reversed(range(nstep)):
             notlast = 1.0 - first[:, t + 1]
-            nextvalue_cost = cost_return[:, t]  # Using cost return (J_Di)
-            
+            nextvalue_cost = cost_return[:, t]  # Using cumulative cost return (J_Di)
+
+            # Compute cost delta
             delta_cost = cost_return[:, t] + notlast * nextvalue_cost - cost_return[:, t]
             adv_cost[:, t] = lastgaelam_cost = delta_cost + notlast * lastgaelam_cost
 
-        # Normalize Advantage for Average Reward Setting
-        if self.return_type == 'average':
-            adv = adv - adv.mean()  # Centering for G2P2C
+        adv_cost = adv_cost / (adv_cost.max() + 1e-5)  # Normalize in [0, 1]
 
         return adv.to(device=orig_device), vtarg.to(device=orig_device), adv_cost.to(device=orig_device)
 
@@ -132,7 +132,7 @@ class RolloutBuffer:
 
         cgm_target = self.cgm_target.view(-1)
         if self.agent_id == "g2p2c":
-            AuxiliaryBuffer.update(s_hist, cgm_target, act, first_flag)
+            AuxiliaryBuffer.update(s_hist, cgm_target, act, first_flag, adv_cost)
 
         if self.shuffle_rollout:
             rand_perm = torch.randperm(buffer_len)
@@ -188,23 +188,36 @@ class Rollout:
     def calc_direct_cost(self, cgm_target, is_first):
         """
         Compute cost increment (D_i) based on CGM target.
+        Normalize and clip extreme values for stable cost training.
         """
+        # Compute raw cost based on CGM deviation from the norm (70-180 mg/dL)
         if 70 <= cgm_target <= 180:
             cost = 0
         elif 54 <= cgm_target < 70:
             cost = (70 - cgm_target) / 8
         elif cgm_target < 54:
-            cost = (70 - cgm_target) / 4 
+            cost = (70 - cgm_target) / 4
         elif 180 < cgm_target <= 250:
-            cost = (cgm_target - 180) / 140 
+            cost = (cgm_target - 180) / 140
         else:
-            cost = (cgm_target - 180) / 70 
+            cost = (cgm_target - 180) / 70
 
-        # Compute cost increment: D_i = max(C - M, 0)
-        if is_first:            
-            # Reset max cost tracking (M) and direct_cost
+        # **Safe Normalization**: Check if std() is zero
+        cost_std = self.direct_cost.std()
+        cost_mean = self.direct_cost.mean()
+
+        if cost_std > 1e-5:  # Avoid division by zero
+            cost = (cost - cost_mean) / cost_std
+        else:
+            cost = cost - cost_mean  # Only center without scaling
+
+        # Apply clipping to prevent large cost spikes
+        cost = max(0.0, min(cost, 5.0)) # Ensuring cost values stay reasonable
+
+        # Compute direct cost increment (SCPO state-wise constraint)
+        if is_first:
             direct_cost = cost
-            self.max_cost = cost  # Update max state-wise cost (M)
+            self.max_cost = cost  # Reset max cost tracking (M)
         else:
             direct_cost = max(cost - self.max_cost, 0)
             self.max_cost = max(self.max_cost, cost)  # Update max state-wise cost (M)

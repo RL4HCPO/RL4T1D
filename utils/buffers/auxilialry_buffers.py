@@ -18,6 +18,8 @@ class AuxiliaryBuffer:
         self.actions = torch.zeros(self.size, 1, device=args.device, dtype=torch.float32)
         self.logprob = torch.zeros(self.size, 1, device=args.device, dtype=torch.float32)
         self.value_target = torch.zeros(self.size, device=args.device, dtype=torch.float32)
+        self.advantage_cost = torch.zeros(self.size, device=args.device, dtype=torch.float32)
+
         self.aux_batch_size = args.aux_batch_size
 
         self.device = args.device
@@ -29,19 +31,21 @@ class AuxiliaryBuffer:
         else:
             self.cgm_target = torch.zeros(self.size, 1, device=args.device, dtype=torch.float32)
 
-    def update(self, s, cgm_target, actions, first_flag):
+    def update(self, s, cgm_target, actions, first_flag, advantage_cost):
         if self.bgp_pred_mode:
             s, actions, cgm_target = self.prepare_bgp_prediction(s, cgm_target, actions, first_flag)
             update_size = actions.shape[0]  # this size is lesser then rollout samples.
             self.old_states = torch.cat((self.old_states[update_size:, :, :], s), dim=0)
             self.cgm_target = torch.cat((self.cgm_target[update_size:, :, :], cgm_target), dim=0)
             self.actions = torch.cat((self.actions[update_size:], actions), dim=0)
-        else:  # normal buffer updating approach.
+            self.advantage_cost = torch.cat((self.advantage_cost[update_size:], advantage_cost), dim=0)
+        else:
             cgm_target = cgm_target.view(-1, 1)
             update_size = actions.shape[0]
             self.old_states = torch.cat((self.old_states[update_size:, :, :], s), dim=0)
             self.cgm_target = torch.cat((self.cgm_target[update_size:, :], cgm_target), dim=0)
             self.actions = torch.cat((self.actions[update_size:], actions), dim=0)
+            self.advantage_cost = torch.cat((self.advantage_cost[update_size:], advantage_cost), dim=0)
 
         if not self.buffer_filled:
             self.buffer_level += update_size
@@ -49,12 +53,13 @@ class AuxiliaryBuffer:
                 self.buffer_filled = True
 
         if update_size > self.size:
-            print('The auxilliary update at rollout is larger than MAX buffer size!')
+            print('The auxiliary update at rollout is larger than MAX buffer size!')
             exit()
 
         assert self.old_states.shape[0] == self.size
         assert self.cgm_target.shape[0] == self.size
         assert self.actions.shape[0] == self.size
+        assert self.advantage_cost.shape[0] == self.size
 
     def prepare_bgp_prediction(self, s_hist, cgm_target, act, first_flag):
         buffer_len = s_hist.shape[0]
@@ -77,18 +82,23 @@ class AuxiliaryBuffer:
         return bgp_s_hist, bgp_act, new_cgm_target
 
     def update_targets(self, policy):
-        # calculate the new targets for value and log prob.
-        # done batch wise to reduce memory, aux batch size is used.
         start_idx = 0
         while start_idx < self.size:
             end_idx = min(start_idx + self.aux_batch_size, self.size)
             state_batch = self.old_states[start_idx:end_idx, :, :]
-            # handcraft_feat_batch = self.handcraft_feat[start_idx:end_idx, :, :]
             actions_old_batch = self.actions[start_idx:end_idx]
+
             value_predict = policy.evaluate_critic(state_batch, action=None, cgm_pred=False)
             logprobs, _ = policy.evaluate_actor(state_batch, actions_old_batch)
+
             self.logprob[start_idx:end_idx, :] = logprobs.detach()
             self.value_target[start_idx:end_idx] = value_predict.detach()
+
+            self.advantage_cost[start_idx:end_idx] = (value_predict.detach() * self.advantage_cost[start_idx:end_idx]).mean(dim=0)
+
             start_idx += self.aux_batch_size
+
         assert self.value_target.shape[0] == self.size
         assert self.logprob.shape[0] == self.size
+        assert self.advantage_cost.shape[0] == self.size
+
