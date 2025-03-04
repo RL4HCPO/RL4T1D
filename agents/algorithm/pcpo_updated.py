@@ -179,7 +179,7 @@ class PCPO(Agent):
 
                 policy_update = torch.sqrt(2*self.max_kl/q)*stepdir
                 project_val = ((torch.sqrt(2*self.max_kl/q) * p) + self.d_k) / s
-                projection =  - (torch.max(0, project_val)) * cost_stepdir
+                projection =  - (torch.max(torch.tensor(0.0, device=project_val.device), project_val)) * cost_stepdir
                 opt_step = policy_update - projection
                 
                 # trying without line search
