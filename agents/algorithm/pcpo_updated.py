@@ -177,14 +177,14 @@ class PCPO(Agent):
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
 
-                policy_update = torch.sqrt(2*self.max_kl/q)*step_dir
+                policy_update = torch.sqrt(2*self.max_kl/q)*stepdir
                 project_val = ((torch.sqrt(2*self.max_kl/q) * p) + self.d_k) / s
                 projection =  - (torch.max(0, project_val)) * cost_stepdir
                 opt_step = policy_update - projection
                 
                 # trying without line search
                 prev_params = get_flat_params_from(self.policy.Actor)
-                new_params = prev_params + opt_stepdir
+                new_params = prev_params + opt_step
                 set_flat_params_to(self.policy.Actor, new_params)
 
                 #######
