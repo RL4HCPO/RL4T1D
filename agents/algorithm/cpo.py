@@ -52,13 +52,40 @@ class CPO(Agent):
     def train_pi(self):
         print('Running CPO Policy Update...')
 
+        # success, new_params = line_search(self.policy.Actor, policy_loss, prev_params, fullstep, expected_improve)
+        def line_search(states_batch, actions_batch, logprobs_batch, x, fullstep, expected_improve_full, max_backtracks=10, accept_ratio=0.1):
+            
+            def get_loss():
+                with torch.set_grad_enabled(False):
+                    logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
+                    ratios = torch.exp(logprobs_prediction - logprobs_batch)
+                    ratios = ratios.squeeze()
+                    r_theta = ratios * advantages_batch
+                    # + self.policy.Actor.PolicyModule.penalty * 0.00001
+                    policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() 
+                    return policy_loss
+
+            fval = get_loss()
+            for stepfrac in [.5**x for x in range(max_backtracks)]:
+                x_new = x + stepfrac * fullstep
+                set_flat_params_to(self.policy.Actor, x_new)
+                fval_new = get_loss()
+                actual_improve = fval - fval_new
+                expected_improve = expected_improve_full * stepfrac
+                ratio = actual_improve / expected_improve
+
+                if ratio > accept_ratio:
+                    return True, x_new
+            return False, x
+
         # conjugate gradient decent
-        def conjugate_gradients(Avp_f, b, nsteps, rdotr_tol=1e-10):
+        def conjugate_gradients(Avp_f, b, nsteps=20, rdotr_tol=1e-10):
             x = torch.zeros(b.size(), device=b.device)
             r = b.clone()
             p = b.clone()
             rdotr = torch.dot(r, r)
             for i in range(nsteps):
+            # while rdotr>=rdotr_tol:
                 Avp = Avp_f(p)
                 alpha = rdotr / torch.dot(p, Avp)
                 x += alpha * p
@@ -153,87 +180,194 @@ class CPO(Agent):
 
                 # finding the step direction / add direct hessian finding function here later. get the parameter from args
                 Fvp = Fvp_fim
-                stepdir = conjugate_gradients(Fvp, -loss_grad, 10)
+                stepdir = conjugate_gradients(Fvp, -loss_grad, 20) #point which minimizes the loss
                 # if gradient normalizing, normalize the step dir here
 
                 # findign cost loss
                 c_theta = ratios * cost_advantages_batch
                 # + self.policy.Actor.PolicyModule.penalty * 0.00001
-                cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                """cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
+                initially had this, no need for the- sign in cost loss, as we are minimizing the cost function"""
+                cost_loss = c_theta.mean()
 
                 #finding the cost step direction
                 cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
                 cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) 
-                cost_loss_grad = cost_loss_grad / torch.norm(cost_loss_grad)
-                cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10)
+                # cost_loss_grad = cost_loss_grad / torch.norm(cost_loss_grad)
+                cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 20) #point which minimizes the cost loss
 
                 # Define q, r, s
+                """p is feels to be worng -> p = cost_loss_grad.dot(stepdir)
+                    but since p is not being used, won't change it. """
                 p = -cost_loss_grad.dot(stepdir) #a^T.H^-1.g
                 q = -loss_grad.dot(stepdir) #g^T.H^-1.g
                 r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
                 s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
             
-                epsilon = 1e-6
-                s = s + epsilon
+                epsilon = 1e-8
                 self.d_k = torch.tensor(self.d_k).to(constraint.dtype).to(constraint.device)
                 cc =  constraint - self.d_k
-                lamda = 2*self.max_kl
 
-                #find optimal lambda_a and  lambda_b
-                A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s))
-                B = torch.sqrt(q/self.max_kl)
+                """"""
                 
-                cc += epsilon
-                if cc>0:
-                    opt_lam_a = torch.max(r/cc,A)
-                    opt_lam_b = torch.max(torch.zeros_like(A),torch.min(B,r/cc))
-                else: 
-                    
-                    opt_lam_b = torch.max(r/cc,B)
-                    opt_lam_a = torch.max(torch.zeros_like(A),torch.min(A,r/cc))
-                
-                #define f_a(\lambda) and f_b(\lambda)
-                def f_a_lambda(lamda):
-                    lamda = lamda + epsilon
-                    a = ((r**2)/s - q)/(2*lamda)
-                    b = lamda*((cc**2)/s - self.max_kl)/2
-                    c = - (r*cc)/s
-                    return a+b+c
-                
-                def f_b_lambda(lamda):
-                    lamda = lamda + epsilon
-                    a = -(q/lamda + lamda*self.max_kl)/2
-                    return a   
-                
-                #find values of optimal lambdas 
-                opt_f_a = f_a_lambda(opt_lam_a)
-                opt_f_b = f_b_lambda(opt_lam_b)
-
-                if opt_f_a > opt_f_b:
-                    opt_lambda = opt_lam_a
+                A = q - r**2 / s
+                B = self.max_kl - cc**2 / s
+                optim_case = -1
+                if(cc < 0 and B <0):
+                    optim_case = 3
+                elif (cc < 0 and B > 0):
+                    optim_case = 2
+                elif (cc > 0 and B > 0):
+                    optim_case = 1
                 else:
-                    opt_lambda = opt_lam_b
+                    optim_case = 0
+
+                lam = torch.sqrt(q / self.max_kl)
+                nu = 0
+
+                if (optim_case == 2 or optim_case == 1):
+                    lam_mid = r / cc
+                    L_mid = -0.5 * (q / lam_mid + lam_mid * self.max_kl)
+
+                    lam_a = torch.sqrt(A / (B + epsilon))
+                    L_a = -torch.sqrt(A * B) - r * cc / (s + epsilon)
+                    print('A = ', A, 'B = ', B)
+                    lam_b = torch.sqrt(q / self.max_kl)
+                    L_b = - torch.sqrt( q * self.max_kl)
+                    # print('lam_a = ', lam_a, 'lam_b = ', lam_b, 'lam_mid = ', lam_mid)
+                    # print('L_a = ', L_a, 'L_b = ', L_b, 'L_mid = ', L_mid)
+                    if lam_mid > 0:
+                        if cc < 0:
+                            if lam_a > lam_mid:
+                                lam_a = lam_mid
+                                L_a = L_mid
+                            if lam_b < lam_mid:
+                                lam_b = lam_mid
+                                L_b = L_mid
+                        else:
+                            if lam_a < lam_mid:
+                                lam_a = lam_mid
+                                L_a = L_mid
+                            if lam_b > lam_mid:
+                                lam_b = lam_mid
+                                L_b = L_mid
                         
-                #find optimal nu
-                nu = (opt_lambda*cc - r)/s 
-                if nu>0:
-                    opt_nu = nu 
-                else:
-                    opt_nu = 0
+                        if L_a >= L_b:
+                            lam = lam_a
+                        else:
+                            lam = lam_b
+                    else:
+                        if lam_a > 0:
+                            lam = lam_b
+                        else:
+                            lam = lam_a
 
-                # finding optimal step direction
-                if ((cc**2)/s - self.max_kl) > 0 and cc>0:
-                    print('cost exeeded')
-                    opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
+                    nu = max(0, lam * cc - r) / (s + epsilon)
+                # print('lam = ', lam, 'nu = ', nu)
+                if (optim_case > 0):
+                    opt_stepdir = (1. / (lam + epsilon) ) * ( stepdir + nu * cost_stepdir )
+                    # opt_stepdir = (stepdir + opt_nu*cost_stepdir)/opt_lambda
                 else:
-                    print('cost not exceeded')
-                    opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                    opt_stepdir = torch.sqrt(self.max_kl / (s + epsilon)) * cost_stepdir
+                    # opt_stepdir = torch.sqrt(2*self.max_kl/s)*cost_stepdir
+                # -------
+                # print('opt_stepdir = ', opt_stepdir)
+                print('constraint = ', constraint)
+
+                """"""
+                # find optimal lambda_a and  lambda_b
+                # print('q = ', q, 'r = ', r, 's = ', s, 'cc = ', cc)
+                # print('(q - (r**2)/s) = ', (q - (r**2)/s), '(self.max_kl - (cc**2)/s) = ', (self.max_kl - (cc**2)/s))
+                # A = torch.sqrt((q - (r**2)/s)/(self.max_kl - (cc**2)/s))
+                # B = torch.sqrt(q/self.max_kl)
+                
+                # cc += epsilon
+                # s = s + epsilon
+                # lamda = 2*self.max_kl
+                # if cc>0:
+                #     opt_lam_a = torch.max(r/cc,A)
+                #     opt_lam_b = torch.max(torch.zeros_like(A),torch.min(B,r/cc))
+                #     print('opt_lam_a = ', opt_lam_a, 'opt_lam_b = ', opt_lam_b)
+                # else: 
+                #     opt_lam_b = torch.max(r/cc,B)
+                #     print('torch.zeros_like(A) = ', torch.zeros_like(A), 'torch.min(A,r/cc) = ', torch.min(A,r/cc))
+                #     print('A = ', A, 'r/cc = ', r/cc)
+                #     opt_lam_a = torch.max(torch.zeros_like(A),torch.min(A,r/cc))
+                #     print('opt_lam_a = ', opt_lam_a, 'opt_lam_b = ', opt_lam_b)
+                
+                # #define f_a(\lambda) and f_b(\lambda)
+                # def f_a_lambda(lamda):
+                #     lamda = lamda + epsilon
+                #     a = ((r**2)/s - q)/(2*lamda)
+                #     b = lamda*((cc**2)/s - self.max_kl)/2
+                #     c = - (r*cc)/s
+                #     print('lambda = ', lamda , 's = ' , s ,'a = ', a, 'b = ', b, 'c = ',c )
+                #     return a+b+c
+                
+                # def f_b_lambda(lamda):
+                #     lamda = lamda + epsilon
+                #     a = -(q/lamda + lamda*self.max_kl)/2
+                #     print('a = ', a)
+                #     return a   
+                
+                # #find values of optimal lambdas 
+                # opt_f_a = f_a_lambda(opt_lam_a)
+                # opt_f_b = f_b_lambda(opt_lam_b)
+
+                # if opt_f_a > opt_f_b:
+                #     opt_lambda = opt_lam_a
+                # else:
+                #     opt_lambda = opt_lam_b
+                        
+                # #find optimal nu
+                # nu = (opt_lambda*cc - r)/s 
+                # if nu>0:
+                #     opt_nu = nu 
+                # else:
+                #     opt_nu = 0
+
+                # # finding optimal step direction
+                # if ((cc**2)/s - self.max_kl) > 0 and cc>0:
+                #     print('updated cost exeeded')
+                #     print('constraint = ', constraint)
+                #     """opt_stepdir = torch.sqrt(2*self.max_kl/s)*Fvp(cost_stepdir)
+                #         previously had the above, but check the paper, correct implementation is this. ig"""
+                #     opt_stepdir = torch.sqrt(self.max_kl/s)*cost_stepdir
+                # else:
+                #     print('updated cost not exceeded')
+                #     print('constraint = ', constraint)
+                #     """opt_stepdir = (stepdir - opt_nu*cost_stepdir)/opt_lambda
+                #     this is th earlier version but since, cost_step_dir = - H^-1.b, we should have the below"""
+                #     print('step_dir = ', stepdir, "opt_nu = ", opt_nu, "cost_stepdir = ", cost_stepdir, "opt_lambda = ", opt_lambda)
+                #     opt_stepdir = (stepdir + opt_nu*cost_stepdir)/(opt_lambda + epsilon)
                 
                 # trying without line search
                 prev_params = get_flat_params_from(self.policy.Actor)
-                new_params = prev_params + opt_stepdir * 0.001
+                new_params = prev_params + opt_stepdir
                 set_flat_params_to(self.policy.Actor, new_params)
 
+                # trying with Line search
+                #find the maximum step length
+                # xhx = opt_stepdir.dot(Fvp(opt_stepdir))
+                # beta_1 = -cc/(cost_loss_grad.dot(opt_stepdir))
+                # beta_2 = torch.sqrt(self.max_kl / xhx)
+                
+                # if beta_1 < beta_2:
+                #     beta_star = beta_1
+                # else: 
+                #     beta_star = beta_2
+                
+                # # perform line search
+                # #fullstep = beta_star*opt_stepdir
+                # prev_params = get_flat_params_from(self.policy.Actor)
+                # fullstep = opt_stepdir
+                # expected_improve = -loss_grad.dot(fullstep)
+                # success, new_params = line_search(states_batch, actions_batch, logprobs_batch, prev_params, fullstep, expected_improve)
+                # set_flat_params_to(self.policy.Actor, new_params)
+
+                # def line_search(states_batch, actions_batch, logprobs_batch, x, fullstep, expected_improve_full, max_backtracks=10, accept_ratio=0.1):
+        
+                
                 #######
                 pol_count += 1
                 start_idx += self.batch_size
@@ -284,5 +418,8 @@ class CPO(Agent):
         self.model_logs[0], self.model_logs[5] = self.train_pi()
         self.model_logs[1], self.model_logs[2], self.model_logs[3], self.model_logs[4] = self.train_vf()
         self.LogExperiment.save(log_name='/model_log', data=[self.model_logs.detach().cpu().flatten().numpy()])
+
+        if(self.completed_interactions % 440960 == 0):
+            self.d_k -= 5
 
 
