@@ -37,7 +37,7 @@ class OnPolicyWorker(Worker):
             if self.worker_mode == 'training':
                 is_first = True if self.counter == 0 else False
                 # print(rl_action)
-                buffer.store(self.state, rl_action['action'][0], reward, rl_action['state_value'], rl_action['log_prob'][0], info['cgm'].CGM, is_first)
+                buffer.store(self.state, rl_action['action'][0], reward, rl_action['state_value'], rl_action['log_prob'][0], info['cgm'].CGM, is_first, is_done)
 
             self.logger.update(self.counter, self.episode, info['cgm'], rl_action, pump_action, 0, reward, info)
 

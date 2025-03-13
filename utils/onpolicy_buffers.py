@@ -178,15 +178,39 @@ class RolloutWorker:
         self.first_flag = np.zeros(self.size + 1, dtype=np.bool_)
         self.cgm_target = np.zeros(self.size, dtype=np.float32)
         self.ptr, self.path_start_idx, self.max_size = 0, 0, self.size
+        self.prev= 0
+        self.count = 2
 
-    def store(self, obs, act, rew, val, logp, cgm_target, is_first):
+    def store(self, obs, act, rew, val, logp, cgm_target, is_first, is_done):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        if ((obs[:, 0]).mean() < 0 ):
-            self.cost[self.ptr] = -(obs[:, 0]).mean()
+        target_cost = obs[:, 0].mean()
+        # if ((obs[:, 0]).mean() < 0 ):
+        #     self.cost[self.ptr] = -(obs[:, 0]).mean()
+        # else:
+        #     self.cost[self.ptr] = 0.0001
+        if(target_cost <= -0.75 or cgm_target<70):
+            self.cost[self.ptr] = 1500 + ((70 - cgm_target)**2)
+            if(self.prev >= cgm_target):
+                self.cost[self.ptr] += (self.prev - cgm_target)*100
+                self.cost[self.ptr] *= self.count
+                self.count+=1
+            else:
+                self.cost[self.ptr] /= 10
+                self.cost[self.ptr] = max(0, self.cost[self.ptr] - (self.prev - cgm_target)*1000)
+        elif(cgm_target > 155):
+            self.cost[self.ptr] = cgm_target ** 1.5
+        elif(target_cost >= -0.60 and cgm_target> 120):
+            self.cost[self.ptr] = 70 + cgm_target - 130
+        # elif(cgm_target > 450):
+        #     self.cost[self.ptr] = 1000
         else:
-            self.cost[self.ptr] = 0.0001
-        # self.cost[self.ptr] = (obs[:, 0]).mean()
+            self.cost[self.ptr] = 0
+        if(self.prev < cgm_target):
+            self.count = 2
+        if(is_done):
+            self.cost[self.ptr] += 100000
+        self.prev =cgm_target
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
@@ -194,6 +218,7 @@ class RolloutWorker:
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
+        print('reward = ', rew, 'cgm_target = ', cgm_target,'norm = ', target_cost,'cost = ,', self.cost[self.ptr])
         # if cgm_target <= 70:
         #     self.cost[self.ptr] = 1
         # else:
