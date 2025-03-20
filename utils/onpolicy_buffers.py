@@ -74,8 +74,6 @@ class RolloutBuffer:
         orig_device = self.v_pred.device
         assert orig_device == self.cost.device == self.first_flag.device
         vpred, cost, first = (x.cpu() for x in (self.v_pred, self.cost, self.first_flag))
-        # print('cost inside compute gcae')
-        # print(cost)
         first = first.to(dtype=torch.float32)
         assert first.dim() == 2
         nenv, nsteps = cost.shape
@@ -87,20 +85,7 @@ class RolloutBuffer:
             nextvalue = vpred[:, t+1]
             delta = cost[:, t] + notlast*self.gamma*nextvalue - vpred[:, t]
             cadv[:, t] = lastcgaelam = delta + notlast* self.gamma * self.lambda_ *lastcgaelam
-        return cadv.to(device=orig_device)
-    
-
-    # the compute cost function
-    
-    # def compute_cost_tensor(self):
-    #     orig_device = self.cost.device
-    #     cost_tensor = torch.zeros_like(self.cost, device=orig_device)
-    #     for t in reversed(range(self.n_step)):
-    #         if t == self.n_step - 1:
-    #             cost_tensor[:, t] = self.cost[:, t]
-    #         else:
-    #             cost_tensor[:, t] = self.cost[:, t] + self.gamma * cost_tensor[:, t + 1]
-    #     return cost_tensor   
+        return cadv.to(device=orig_device) 
     
 
     def estimate_constraint_value(self):
@@ -127,7 +112,6 @@ class RolloutBuffer:
                 self.reward = self.reward_normaliser(self.reward, self.first_flag)
             self.adv, self.v_targ = self.compute_gae()  # # calc returns
             self.cadv = self.computer_gcae()
-            # self.cost = self.compute_cost_tensor()  # Compute cost tensor
 
         if self.return_type == 'average':
             self.reward = self.reward_normaliser(self.reward, self.first_flag, type='average')
@@ -172,7 +156,7 @@ class RolloutWorker:
         self.state = np.zeros(core.combined_shape(self.size, (self.feature_hist, self.features)), dtype=np.float32)
         self.actions = np.zeros(self.size, dtype=np.float32)
         self.rewards = np.zeros(self.size, dtype=np.float32)
-        self.cost = np.ones(self.size, dtype=np.float32)
+        self.cost = np.zeros(self.size, dtype=np.float32)
         self.state_values = np.zeros(self.size + 1, dtype=np.float32)
         self.logprobs = np.zeros(self.size, dtype=np.float32)
         self.first_flag = np.zeros(self.size + 1, dtype=np.bool_)
@@ -185,21 +169,18 @@ class RolloutWorker:
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
         target_cost = obs[:, 0].mean()
-        # if ((obs[:, 0]).mean() < 0 ):
-        #     self.cost[self.ptr] = -(obs[:, 0]).mean()
-        # else:
-        #     self.cost[self.ptr] = 0.0001
+
         if(target_cost <= -0.75 or cgm_target<70):
-            self.cost[self.ptr] = 1500 + ((70 - cgm_target)**2)
+            self.cost[self.ptr] = 2500 + ((70 - cgm_target)**2) # To penalize hypo range
             if(self.prev >= cgm_target):
-                self.cost[self.ptr] += (self.prev - cgm_target)*100
-                self.cost[self.ptr] *= self.count
-                self.count+=1
+                self.cost[self.ptr] += (self.prev - cgm_target)*100 # penalize If the agent continues to reduce the glucose level
+                self.cost[self.ptr] *= self.count # penalize if the agent spend more time in hypoglycemia
+                self.count+=1 
             else:
-                self.cost[self.ptr] /= 10
-                self.cost[self.ptr] = max(0, self.cost[self.ptr] - (self.prev - cgm_target)*1000)
+                self.cost[self.ptr] /= 10 # reduce the penalty if it seems going away from hypo
+                self.cost[self.ptr] = max(0, self.cost[self.ptr] - (cgm_target - self.prev)*1000)
         elif(cgm_target > 155):
-            self.cost[self.ptr] = cgm_target ** 1.5
+            self.cost[self.ptr] = cgm_target ** 1.5 # penalize hyper
         elif(target_cost >= -0.60 and cgm_target> 120):
             self.cost[self.ptr] = 70 + cgm_target - 130
         # elif(cgm_target > 450):
@@ -207,9 +188,9 @@ class RolloutWorker:
         else:
             self.cost[self.ptr] = 0
         if(self.prev < cgm_target):
-            self.count = 2
+            self.count = 2 # reset the counter
         if(is_done):
-            self.cost[self.ptr] += 100000
+            self.cost[self.ptr] += 10000
         self.prev =cgm_target
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
@@ -219,11 +200,6 @@ class RolloutWorker:
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
         print('reward = ', rew, 'cgm_target = ', cgm_target,'norm = ', target_cost,'cost = ,', self.cost[self.ptr])
-        # if cgm_target <= 70:
-        #     self.cost[self.ptr] = 1
-        # else:
-        #     self.cost[self.ptr] = 0
-        # # self.cost[self.ptr] = (obs[:, 0]).mean()
         self.ptr += 1
 
     def finish_path(self, final_v):
