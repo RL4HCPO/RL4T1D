@@ -4,6 +4,8 @@ from utils import core
 from utils.reward_normalizer import RewardNormalizer
 from utils.core import linear_scaling
 
+import csv
+import os
 
 class RolloutBuffer:
     def __init__(self, args):
@@ -37,9 +39,12 @@ class RolloutBuffer:
         self.v_pred = torch.zeros(self.n_training_workers, self.n_step + 1, device=self.device)
 
         # Cost-related buffers for SCPO
+        self.cost = torch.zeros(self.n_training_workers, self.n_step, device=self.device)  # Raw cost value
+        self.normalized_cost = torch.zeros(self.n_training_workers, self.n_step, device=self.device)  # Normalized cost value
         self.direct_cost = torch.zeros(self.n_training_workers, self.n_step, device=self.device)  # Di
         self.cost_return = torch.zeros(self.n_training_workers, self.n_step, device=self.device)  # J_Di
         self.adv_cost = torch.zeros(self.n_training_workers, self.n_step, device=self.device)  # A_Di
+        self.max_cost_tensor = torch.zeros(self.n_training_workers, self.n_step, device=self.device)
 
         self.first_flag = torch.zeros(self.n_training_workers, self.n_step + 1, device=self.device)
 
@@ -107,6 +112,7 @@ class RolloutBuffer:
     def prepare_rollout_buffer(self, AuxiliaryBuffer=None):
         """
         Prepare the buffer for training with normalized advantages.
+        Also, logs cost values after computing cost_adv.
         """
         if self.return_type == 'discount':
             if self.normalize_reward:  
@@ -123,27 +129,32 @@ class RolloutBuffer:
         logp = self.actions_logprobs.view(-1, 1)
         v_targ = self.v_targ.view(-1)
         adv = self.adv.view(-1)
+        cost = self.cost.view(-1)
+        normalized_cost = self.normalized_cost.view(-1)
         dir_cost = self.direct_cost.view(-1)
         cost_ret = self.cost_return.view(-1)
         adv_cost = self.adv_cost.view(-1)
-        first_flag = self.first_flag.view(-1)
+        max_cost = self.max_cost_tensor.view(-1)
+        cgm_target = self.cgm_target.view(-1)
 
         buffer_len = s_hist.shape[0]
 
-        cgm_target = self.cgm_target.view(-1)
         if self.agent_id == "g2p2c":
-            AuxiliaryBuffer.update(s_hist, cgm_target, act, first_flag, adv_cost)
+            AuxiliaryBuffer.update(s_hist, cgm_target, act, self.first_flag.view(-1), adv_cost)
 
         if self.shuffle_rollout:
             rand_perm = torch.randperm(buffer_len)
-            s_hist = s_hist[rand_perm, :, :]  # torch.Size([batch, n_steps, features])
-            act = act[rand_perm, :]  # torch.Size([batch, 1])
-            logp = logp[rand_perm, :]  # torch.Size([batch, 1])
-            v_targ = v_targ[rand_perm]  # torch.Size([batch])
-            adv = adv[rand_perm]  # torch.Size([batch])
-            dir_cost = dir_cost[rand_perm]  # torch.Size([batch])
-            cost_ret = cost_ret[rand_perm]  # torch.Size([batch])
-            adv_cost = adv_cost[rand_perm]  # torch.Size([batch])
+            s_hist = s_hist[rand_perm, :, :]
+            act = act[rand_perm, :]
+            logp = logp[rand_perm, :]
+            v_targ = v_targ[rand_perm]
+            adv = adv[rand_perm]
+            cost = cost[rand_perm]
+            normalized_cost = normalized_cost[rand_perm]
+            dir_cost = dir_cost[rand_perm]
+            cost_ret = cost_ret[rand_perm]
+            adv_cost = adv_cost[rand_perm]
+            max_cost = max_cost[rand_perm]
 
         return dict(
             states=s_hist, 
@@ -153,7 +164,10 @@ class RolloutBuffer:
             advantage=adv, 
             len=buffer_len,
             cgm_target=cgm_target,
+            cost=cost,
+            normalized_cost=normalized_cost,
             direct_cost=dir_cost,
+            max_cost=max_cost,
             cost_return=cost_ret,
             advantage_cost=adv_cost, 
         )
@@ -179,11 +193,34 @@ class Rollout:
         self.cgm_target = np.zeros(self.size, dtype=np.float32)
 
         # Cost-related tracking
+        self.cost = np.zeros(self.size, dtype=np.float32)
+        self.normalized_cost = np.zeros(self.size, dtype=np.float32)
         self.direct_cost = np.zeros(self.size, dtype=np.float32)  # Stores cost increments (D_i)
         self.cost_return = np.zeros(self.size, dtype=np.float32)  # Stores cumulative cost return (J_Di)
+        self.max_cost_tensor = np.zeros(self.size, dtype=np.float32)
         self.max_cost = 0  # Initialize max state-wise cost (M)
 
         self.ptr, self.path_start_idx, self.max_size = 0, 0, self.size
+        
+        self.csv_log_path = "cost_logging.csv"  # File to store cost values
+        self.ensure_csv_header()  # Ensure CSV file is initialized with a header
+        
+    def ensure_csv_header(self):
+        """
+        Ensure that the CSV file has the necessary header.
+        """
+        if not os.path.exists(self.csv_log_path):
+            with open(self.csv_log_path, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["step", "cgm_target", "raw_cost", "normalized_cost", "direct_cost", "max_cost", "cost_return"])
+                
+    def log_cost_to_csv(self, step, cgm_target, raw_cost, normalized_cost, direct_cost, max_cost, cost_return):
+        """
+        Log cost values to the CSV file.
+        """
+        with open(self.csv_log_path, mode='a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([step, cgm_target, raw_cost, normalized_cost, direct_cost, max_cost, cost_return])
 
     def calc_direct_cost(self, cgm_target, is_first):
         """
@@ -201,7 +238,6 @@ class Rollout:
             cost = (cgm_target - 180) / 140
         else:
             cost = (cgm_target - 180) / 70
-
         # **Safe Normalization**: Check if std() is zero
         cost_std = self.direct_cost.std()
         cost_mean = self.direct_cost.mean()
@@ -212,17 +248,15 @@ class Rollout:
             cost = cost - cost_mean  # Only center without scaling
 
         # Apply clipping to prevent large cost spikes
-        cost = max(0.0, min(cost, 5.0)) # Ensuring cost values stay reasonable
-
+        normalized_cost = max(0.0, min(cost, 5.0)) # Ensuring cost values stay reasonable
         # Compute direct cost increment (SCPO state-wise constraint)
         if is_first:
-            direct_cost = cost
-            self.max_cost = cost  # Reset max cost tracking (M)
+            direct_cost = normalized_cost
+            self.max_cost = normalized_cost  # Reset max cost tracking (M)
         else:
-            direct_cost = max(cost - self.max_cost, 0)
-            self.max_cost = max(self.max_cost, cost)  # Update max state-wise cost (M)
-
-        return direct_cost
+            direct_cost = max(normalized_cost - self.max_cost, 0)
+            self.max_cost = max(self.max_cost, normalized_cost)  # Update max state-wise cost (M)
+        return cost, normalized_cost, direct_cost
 
     def store(self, obs, act, rew, val, logp, cgm_target, is_first):
         """
@@ -237,12 +271,24 @@ class Rollout:
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-
+        cost, normalized_cost, direct_cost = self.calc_direct_cost(cgm_target, is_first)
+        self.cost[self.ptr] = cost
+        self.normalized_cost[self.ptr] = normalized_cost
+        self.max_cost_tensor[self.ptr] = self.max_cost
         # Store cost increment (D_i)
-        self.direct_cost[self.ptr] = self.calc_direct_cost(cgm_target, is_first)
+        self.direct_cost[self.ptr] = direct_cost
 
         # Compute and store cumulative cost return (J_Di)
         self.cost_return[self.ptr] = self.direct_cost[self.ptr] if (self.ptr == 0 or is_first) else self.cost_return[self.ptr - 1] + self.direct_cost[self.ptr]
+        self.log_cost_to_csv(
+            step=self.ptr,  # Using `self.ptr` as step index
+            cgm_target=self.cgm_target[self.ptr],  
+            raw_cost=cost,
+            normalized_cost=normalized_cost,
+            direct_cost=direct_cost,
+            max_cost=self.max_cost,
+            cost_return=self.cost_return[self.ptr]
+        )
 
         self.ptr += 1
 
@@ -262,8 +308,11 @@ class Rollout:
             first_flag=self.first_flag, 
             reward=self.rewards, 
             cgm_target=self.cgm_target,
+            cost=self.cost,  # Raw cost value
+            normalized_cost=self.normalized_cost,  # Normalized cost value
             direct_cost=self.direct_cost,  # Cost increment (D_i)
             cost_return=self.cost_return,  # Cumulative cost return (J_Di)
+            max_cost=self.max_cost_tensor,  # Max cost value
         )
 
         # Reset max cost tracking for the next trajectory
