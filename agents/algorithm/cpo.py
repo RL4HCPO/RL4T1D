@@ -81,7 +81,7 @@ class CPO(Agent):
             r = b.clone()
             p = b.clone()
             rdotr = torch.dot(r, r)
-            for i in range(nsteps):
+            while rdotr >= rdotr_tol:
                 Avp = Avp_f(p)
                 alpha = rdotr / torch.dot(p, Avp)
                 x += alpha * p
@@ -327,7 +327,6 @@ class CPO(Agent):
 
             
             pol_count += 1
-            start_idx += self.batch_size
 
             if not continue_pi_training:
                 break

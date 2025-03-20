@@ -190,7 +190,7 @@ class RolloutWorker:
         # else:
         #     self.cost[self.ptr] = 0.0001
         if(target_cost <= -0.75 or cgm_target<70):
-            self.cost[self.ptr] = 1500 + ((70 - cgm_target)**2)
+            self.cost[self.ptr] = 2500 + ((70 - cgm_target)**2)
             if(self.prev >= cgm_target):
                 self.cost[self.ptr] += (self.prev - cgm_target)*100
                 self.cost[self.ptr] *= self.count
@@ -209,7 +209,7 @@ class RolloutWorker:
         if(self.prev < cgm_target):
             self.count = 2
         if(is_done):
-            self.cost[self.ptr] += 100000
+            self.cost[self.ptr] += 10000
         self.prev =cgm_target
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
