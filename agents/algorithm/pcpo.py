@@ -42,15 +42,14 @@ class PCPO(Agent):
         self.d_k = args.d_k
         self.max_kl = args.max_kl
         self.damping = args.damping
-        # self.constraint = self.rollout_buffer['constraint']
 
         # logging
-        self.model_logs = torch.zeros(7, device=self.args.device)
+        self.model_logs = torch.zeros(8, device=self.args.device)
         self.LogExperiment = LogExperiment(args)
     
 
     def train_pi(self):
-        print('Running CPO Policy Update...')
+        print('Running PCPO Policy Update...')
 
         # conjugate gradient decent
         def conjugate_gradients(Avp_f, b, nsteps=20, rdotr_tol=1e-10):
@@ -58,7 +57,6 @@ class PCPO(Agent):
             r = b.clone()
             p = b.clone()
             rdotr = torch.dot(r, r)
-            # for i in range(nsteps):
             while rdotr >= rdotr_tol:
                 Avp = Avp_f(p)
                 alpha = rdotr / torch.dot(p, Avp)
@@ -110,102 +108,76 @@ class PCPO(Agent):
         continue_pi_training, buffer_len = True, self.rollout_buffer['len']
         constraint = self.rollout_buffer['constraint']
         policy_grad_ = 0
-        # for i in range(self.train_pi_iters):
-            # start_idx, n_batch = 0, 0
-            # while start_idx < buffer_len:
-        # n_batch += 1
-        # end_idx = min(start_idx + self.batch_size, buffer_len)
+        for i in range(self.train_pi_iters):
+            states_batch = self.rollout_buffer['states'][:, :, :]
+            actions_batch = self.rollout_buffer['action'][:, :]
+            logprobs_batch = self.rollout_buffer['log_prob_action'][:, :]
+            advantages_batch = self.rollout_buffer['advantage'][:]
+            advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-5)
+            cost_advantages_batch = self.rollout_buffer['cost_advantage'][:]
+            cost_advantages_batch = (cost_advantages_batch - cost_advantages_batch.mean()) / (cost_advantages_batch.std() + 1e-5)
 
-        states_batch = self.rollout_buffer['states'][:, :, :]
-        actions_batch = self.rollout_buffer['action'][:, :]
-        logprobs_batch = self.rollout_buffer['log_prob_action'][:, :]
-        advantages_batch = self.rollout_buffer['advantage'][:]
-        advantages_batch = (advantages_batch - advantages_batch.mean()) / (advantages_batch.std() + 1e-5)
-        cost_advantages_batch = self.rollout_buffer['cost_advantage'][:]
-        cost_advantages_batch = (cost_advantages_batch - cost_advantages_batch.mean()) / (cost_advantages_batch.std() + 1e-5)
+            logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
+            ratios = torch.exp(logprobs_prediction - logprobs_batch)
+            ratios = ratios.squeeze()
+            r_theta = ratios * advantages_batch
+            policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() 
 
-        logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
-        ratios = torch.exp(logprobs_prediction - logprobs_batch)
-        ratios = ratios.squeeze()
-        r_theta = ratios * advantages_batch
-        # + self.policy.Actor.PolicyModule.penalty * 0.00001
-        # policy_loss = -r_theta.mean() - self.entropy_coef * dist_entropy.mean() 
-        policy_loss = -r_theta.mean()
+            # early stop: approx kl calculation
+            log_ratio = logprobs_prediction - logprobs_batch
+            approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
+            if approx_kl > 1.5 * self.target_kl:
+                if self.args.verbose:
+                    print('Early stop => Epoch {}, Approximate KL: {}.'.format(i, approx_kl))
+                continue_pi_training = False
+                break
 
-        # early stop: approx kl calculation
-        log_ratio = logprobs_prediction - logprobs_batch
-        approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
-        # if approx_kl > 1.5 * self.target_kl:
-        #     if self.args.verbose:
-        #         print('Early stop => Epoch {}, Batch {}, Approximate KL: {}.'.format(i, n_batch, approx_kl))
-        #     continue_pi_training = False
-        #     break
+            if torch.isnan(policy_loss):  # for debugging only!
+                print('policy loss: {}'.format(policy_loss))
+                exit()
 
-        if torch.isnan(policy_loss):  # for debugging only!
-            print('policy loss: {}'.format(policy_loss))
-            exit()
+            temp_loss_log += policy_loss.detach()
+            policy_grad += torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
+            grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
+            loss_grad = torch.cat([grad.view(-1) for grad in grads])
+            Fvp = Fvp_fim
+            stepdir = conjugate_gradients(Fvp, -loss_grad, 10) # H^-1.g
 
-        temp_loss_log += policy_loss.detach()
-        policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)
-        # policy_grad = torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), max_norm=1.0)
-        policy_grad_ += policy_grad # used to returing mean_pi_gradient at the end
-        grads = torch.autograd.grad(policy_loss, self.policy.Actor.parameters(), retain_graph=True)
-        loss_grad = torch.cat([grad.view(-1) for grad in grads])
-        # implement gradient normalizing if want here
+            # finding cost loss
+            c_theta = ratios * cost_advantages_batch
+            """no need for the- sign in cost loss, as we are minimizing the cost function"""
+            cost_loss = c_theta.mean()
 
-        # finding the step direction / add direct hessian finding function here later. get the parameter from args
-        Fvp = Fvp_fim
-        stepdir = conjugate_gradients(Fvp, -loss_grad, 10) #point which minimizes the loss
-        # if gradient normalizing, normalize the step dir here
+            #finding the cost step direction
+            cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
+            cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) 
+            cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10) # H^-1.a
 
-        # findign cost loss
-        c_theta = ratios * cost_advantages_batch
-        # + self.policy.Actor.PolicyModule.penalty * 0.00001
-        """cost_loss = -c_theta.mean() - self.entropy_coef * dist_entropy.mean()
-        initially had this, no need for the- sign in cost loss, as we are minimizing the cost function"""
-        cost_loss = c_theta.mean()
+            # Define p, q, r, s
+            p = cost_loss_grad.dot(stepdir) #a^T.H^-1.g
+            q = -loss_grad.dot(stepdir) #g^T.H^-1.g
+            r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
+            s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
 
-        #finding the cost step direction
-        cost_grads = torch.autograd.grad(cost_loss, self.policy.Actor.parameters())
-        cost_loss_grad = torch.cat([grad.view(-1) for grad in cost_grads]) 
-        # cost_loss_grad = cost_loss_grad / torch.norm(cost_loss_grad)
-        cost_stepdir = conjugate_gradients(Fvp, -cost_loss_grad, 10) #point which minimizes the cost loss
+            epsilon = 1e-8
+            '''pcpo update'''
+            policy_update = torch.sqrt(2*self.max_kl/(q + epsilon))*stepdir
+            project_val = ((torch.sqrt(2*self.max_kl/(q + epsilon)) * p) + (constraint - self.d_k)) / (s + epsilon)
+            projection = (max(0.0, project_val.item())) * cost_stepdir
+            opt_step = policy_update + projection
+            
+            # trying without line search
+            prev_params = get_flat_params_from(self.policy.Actor)
+            new_params = prev_params + opt_step
+            set_flat_params_to(self.policy.Actor, new_params)
 
-        # Define q, r, s
-        """p is feels to be worng -> p = cost_loss_grad.dot(stepdir)
-            but since p is not being used, won't change it. """
-        p = cost_loss_grad.dot(stepdir) #a^T.H^-1.g
-        q = -loss_grad.dot(stepdir) #g^T.H^-1.g
-        r = loss_grad.dot(cost_stepdir) #g^T.H^-1.a
-        s = -cost_loss_grad.dot(cost_stepdir) #a^T.H^-1.a 
+            pol_count += 1
 
-        print('s =', s, 'r =', r, 'q =', q, 'p =', p)
-        epsilon = 1e-8
-        policy_update = torch.sqrt(2*self.max_kl/(q + epsilon))*stepdir
-        project_val = ((torch.sqrt(2*self.max_kl/(q + epsilon)) * p) + (constraint - self.d_k)) / (s + epsilon)
-        print('(torch.sqrt(2*self.max_kl/(q + epsilon)) * p) = ',(torch.sqrt(2*self.max_kl/(q + epsilon)) * p))
-        print('(constraint - self.d_k)) / (s + epsilon) = ', ((constraint - self.d_k)) / (s + epsilon))
-        print('self.d_k = ', self.d_k)
-        print('constraint - self.d_k = ', constraint - self.d_k)
-        print("project_val = ", project_val.item())
-        projection = (max(0.0, project_val.item())) * cost_stepdir
-        opt_step = policy_update + projection
-        
-        # trying without line search
-        print("constraint =", constraint)
-        prev_params = get_flat_params_from(self.policy.Actor)
-        new_params = prev_params + opt_step
-        set_flat_params_to(self.policy.Actor, new_params)
-
-        #######
-        pol_count += 1
-        # start_idx += self.batch_size
-
-            # if not continue_pi_training:
-            #     break
+            if not continue_pi_training:
+                break
         mean_pi_grad = policy_grad_ / pol_count if pol_count != 0 else 0
         print('The policy loss is: {}'.format(temp_loss_log))
-        return mean_pi_grad, temp_loss_log
+        return mean_pi_grad, temp_loss_log, constraint
 
     def train_vf(self):
         print('Running Value Function Update...')
@@ -244,7 +216,7 @@ class PCPO(Agent):
 
     def update(self):
         self.rollout_buffer = self.RolloutBuffer.prepare_rollout_buffer()
-        self.model_logs[0], self.model_logs[5] = self.train_pi()
+        self.model_logs[0], self.model_logs[5] , self.model_logs[7]= self.train_pi()
         self.model_logs[1], self.model_logs[2], self.model_logs[3], self.model_logs[4] = self.train_vf()
         self.LogExperiment.save(log_name='/model_log', data=[self.model_logs.detach().cpu().flatten().numpy()])
 

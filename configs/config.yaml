@@ -32,7 +32,7 @@ agent:
   n_features: 2
   feature_history: 12
   control_space_type: 'exponential'
-  patient_id: 0
+  patient_id: 6
 
   # Action and glucose settings
   insulin_min: 0
@@ -41,17 +41,17 @@ agent:
   glucose_min: 39
 
   # Hyperparameters (default values, can be overridden in a multirun)
-  pi_lr: 1e-4
-  vf_lr: 1e-4
-  entropy_coef: 0.01
-  grad_clip: 0.5
-  eps_clip: 0.2
-  max_kl: 0.1  # Max KL Divergence (can be tuned via command line)
-  damping: 0.01  # Damping parameter (can be tuned via command line)
-  target_kl: 0.05
-  n_vf_epochs: 5
-  n_pi_epochs: 5
-  d_k: 40  # Add the d_k hyperparameter here
+  # pi_lr: 1e-4
+  # vf_lr: 1e-4
+  # entropy_coef: 0.01
+  # grad_clip: 0.5
+  # eps_clip: 0.2
+  # max_kl: 0.1  # Max KL Divergence (can be tuned via command line)
+  # damping: 0.01  # Damping parameter (can be tuned via command line)
+  # target_kl: 0.05
+  # n_vf_epochs: 5
+  # n_pi_epochs: 5
+  # d_k: 40  # Add the d_k hyperparameter here
 
 # The hydra section (simplified)
 hydra:

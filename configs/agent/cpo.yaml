@@ -22,15 +22,15 @@ grad_clip: 1
 eps_clip: 0.1
 target_kl: 0.01
 # change the following cpo parameters ( used for policy update)
-d_k: 170
-max_kl: 0.01
+d_k: 10
+max_kl: 0.0001
 damping: 0.1
 
 # train
 n_step: 256
 max_epi_length: 2880
-n_training_workers: 16
-total_interactions: 800000  # total number of interactions the agent will train for 800000
+n_training_workers: 4
+total_interactions: 200000  # total number of interactions the agent will train for 800000
 n_interactions_lr_decay: 600000
 
 # training parameters
