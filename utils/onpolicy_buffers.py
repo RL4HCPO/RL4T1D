@@ -4,6 +4,9 @@ from utils import core
 from utils.reward_normalizer import RewardNormalizer
 from utils.core import linear_scaling
 
+from cost_estimator_lstm import CostEstimatorLSTM
+import os
+import csv
 
 class RolloutBuffer:
     def __init__(self, args):
@@ -165,32 +168,31 @@ class RolloutWorker:
         self.prev= 0
         self.count = 2
 
+        self.cost_model = CostEstimatorLSTM(
+            feature_history=self.feature_hist,
+            n_features=self.features,
+            extra_feat_dim=7  # act, rew, val, logp, cgm_target, is_first, is_done
+        ).to(self.device)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        model_path = os.path.join(current_dir, "cost_model.pth")
+        self.cost_model.load_state_dict(torch.load(model_path, map_location=self.device))
+        self.cost_model.eval()
+
     def store(self, obs, act, rew, val, logp, cgm_target, is_first, is_done):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        target_cost = obs[:, 0].mean()
+        
+        # Current Cost function
+        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, hist, features]
+        extra_feats = torch.tensor(
+            [[act, rew, val, logp, cgm_target, float(is_first), float(is_done)]],
+            dtype=torch.float32, device=self.device
+        )
 
-        if(target_cost <= -0.75 or cgm_target<70):
-            self.cost[self.ptr] = 2500 + ((70 - cgm_target)**2) # To penalize hypo range
-            if(self.prev >= cgm_target):
-                self.cost[self.ptr] += (self.prev - cgm_target)*100 # penalize If the agent continues to reduce the glucose level
-                self.cost[self.ptr] *= self.count # penalize if the agent spend more time in hypoglycemia
-                self.count+=1 
-            else:
-                self.cost[self.ptr] /= 10 # reduce the penalty if it seems going away from hypo
-                self.cost[self.ptr] = max(0, self.cost[self.ptr] - (cgm_target - self.prev)*1000)
-        elif(cgm_target > 155):
-            self.cost[self.ptr] = cgm_target ** 1.5 # penalize hyper
-        elif(target_cost >= -0.60 and cgm_target> 120):
-            self.cost[self.ptr] = 70 + cgm_target - 130
-        # elif(cgm_target > 450):
-        #     self.cost[self.ptr] = 1000
-        else:
-            self.cost[self.ptr] = 0
-        if(self.prev < cgm_target):
-            self.count = 2 # reset the counter
-        if(is_done):
-            self.cost[self.ptr] += 10000
+        with torch.no_grad():
+            cost_pred = self.cost_model(obs_tensor, extra_feats)
+            self.cost[self.ptr] = cost_pred.item()            
+        
         self.prev =cgm_target
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
@@ -199,8 +201,30 @@ class RolloutWorker:
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
-        print('reward = ', rew, 'cgm_target = ', cgm_target,'norm = ', target_cost,'cost = ,', self.cost[self.ptr])
         self.ptr += 1
+        
+        # Save cost to CSV
+        log_row = [
+            self.ptr,
+            *obs.flatten().tolist(),  # flatten 2D obs to 1D
+            act, rew, val, logp, cgm_target, float(is_first), float(is_done),
+            self.cost[self.ptr]  # predicted cost
+        ]
+
+        csv_path = os.path.join(self.current_dir, 'step_cost_log.csv')
+
+        # Write header if file is new
+        if self.ptr == 0 and not os.path.exists(csv_path):
+            with open(csv_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                header = ['step'] + [f'obs_{i}' for i in range(obs.size)] + \
+                        ['act', 'rew', 'val', 'logp', 'cgm_target', 'is_first', 'is_done', 'cost']
+                writer.writerow(header)
+
+        # Append data
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(log_row)
 
     def finish_path(self, final_v):
         self.state_values[self.ptr] = final_v
