@@ -30,15 +30,54 @@ class ActorNetwork(nn.Module):
         std_index = 0
         id = 0
         std_id = id
+        print('inside get fim')
         for name, param in self.named_parameters():
-            if name == "sigma.weight":
+            # print('name:', name)
+            # print('param:', param)
+            if name == "PolicyModule.sigma.weight":
                 std_id = id
                 std_index = param_count
             param_count += param.view(-1).shape[0]
             id += 1
 
+        # param = dict(self.named_parameters()).get("PolicyModule.sigma.weight", None)
+        
+        # print('std_id:', std_id)
+        # print('std_index:', std_index)
+        # print('param:', param)
         return cov_inv.detach(), mu, {'std_id': std_id, 'std_index': std_index}
     
+    # def get_fim(self, x):
+    #     mu, sigma, _, _ = self.forward(x)
+        
+    #     if sigma.dim() == 1:
+    #         sigma = sigma.unsqueeze(0)
+        
+    #     cov_inv = sigma.pow(-2).repeat(x.size(0), 1)
+        
+    #     # Directly access the parameter using a dictionary
+    #     params_dict = dict(self.named_parameters())
+    #     sigma_weight = params_dict.get("sigma.weight", None)
+        
+    #     if sigma_weight is None:
+    #         raise ValueError("Parameter 'sigma.weight' not found in the network")
+        
+    #     # Get list of parameter names to find std_id (index in named_parameters)
+    #     param_names = list(params_dict.keys())
+    #     try:
+    #         std_id = param_names.index("sigma.weight")
+    #     except ValueError:
+    #         raise ValueError("Parameter 'sigma.weight' missing from named_parameters")
+        
+    #     # Calculate std_index by summing numel of preceding parameters
+    #     params_list = list(self.named_parameters())
+    #     std_index = sum(
+    #         p.numel() 
+    #         for (name, p) in params_list[:std_id]  # Only iterate up to sigma.weight
+    #     )
+        
+    #     return cov_inv.detach(), mu, {'std_id': std_id, 'std_index': std_index}
+
     def get_kl(self, x):
         mu1, sigma1, _, _ = self.forward(x)
 
