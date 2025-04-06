@@ -4,7 +4,8 @@ from utils import core
 from utils.reward_normalizer import RewardNormalizer
 from utils.core import linear_scaling
 
-from cost_estimator_lstm import CostEstimatorLSTM
+import torch.nn as nn
+from utils.cost_estimator_mlp import CostEstimatorMLP
 import os
 import csv
 
@@ -168,32 +169,76 @@ class RolloutWorker:
         self.prev= 0
         self.count = 2
 
-        self.cost_model = CostEstimatorLSTM(
-            feature_history=self.feature_hist,
-            n_features=self.features,
-            extra_feat_dim=7  # act, rew, val, logp, cgm_target, is_first, is_done
-        ).to(self.device)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(current_dir, "cost_model.pth")
-        self.cost_model.load_state_dict(torch.load(model_path, map_location=self.device))
-        self.cost_model.eval()
+        # Cost model: MLP
+        self.obs_dim = self.feature_hist * self.features
+        self.extra_dim = 7
+        self.cost_model = CostEstimatorMLP(input_dim=self.obs_dim + self.extra_dim).to(self.device)
+        self.cost_model_optimizer = torch.optim.Adam(self.cost_model.parameters(), lr=1e-4)
+        self.cost_loss_fn = nn.MSELoss()
+
+        self.current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        self.model_path = os.path.join(self.current_dir, 'cost_model.pth')
+        if os.path.exists(self.model_path):
+            self.cost_model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+            print('[CostModel] Loaded saved weights.')
+        else:
+            print('[CostModel] No saved model found. Starting from scratch.')
+
 
     def store(self, obs, act, rew, val, logp, cgm_target, is_first, is_done):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        
-        # Current Cost function
-        obs_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)  # [1, hist, features]
+
+        # Flatten obs and concatenate extra features
+        obs_tensor = torch.tensor(obs.flatten(), dtype=torch.float32, device=self.device)
         extra_feats = torch.tensor(
-            [[act, rew, val, logp, cgm_target, float(is_first), float(is_done)]],
+            [act, rew, val, logp, cgm_target, float(is_first), float(is_done)],
             dtype=torch.float32, device=self.device
         )
+        model_input = torch.cat([obs_tensor, extra_feats]).unsqueeze(0)  # shape: [1, input_dim]
 
-        with torch.no_grad():
-            cost_pred = self.cost_model(obs_tensor, extra_feats)
-            self.cost[self.ptr] = cost_pred.item()            
-        
-        self.prev =cgm_target
+        # Define improved true cost based on CGM behavior
+        target_cost = obs[:, 0].mean()
+        cost = 0
+
+        if cgm_target < 70:
+            cost = 1500 + ((70 - cgm_target) ** 2)
+            if self.prev >= cgm_target:
+                cost += (self.prev - cgm_target) * 50
+                cost *= self.count
+                self.count += 1
+            else:
+                cost /= 5
+                cost = max(0, cost - (self.prev - cgm_target) * 500)
+
+        elif cgm_target > 155:
+            cost = 500 + ((cgm_target - 155) ** 1.2) * 10
+
+        elif target_cost >= -0.60 and cgm_target > 120:
+            cost = max(0, (cgm_target - 120) * 5)
+
+        else:
+            cost = 0
+
+        if self.prev < cgm_target:
+            self.count = 1
+
+        if is_done:
+            cost += 100000
+
+        normalized_cost = np.log(1 + cost)
+        true_cost = torch.tensor([[normalized_cost]], dtype=torch.float32, device=self.device)
+
+        # Train the model online
+        self.cost_model.train()
+        predicted_cost = self.cost_model(model_input)
+        loss = self.cost_loss_fn(predicted_cost, true_cost)
+        self.cost_model_optimizer.zero_grad()
+        loss.backward()
+        self.cost_model_optimizer.step()
+
+        self.cost[self.ptr] = predicted_cost.item()
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
@@ -206,25 +251,27 @@ class RolloutWorker:
         # Save cost to CSV
         log_row = [
             self.ptr,
-            *obs.flatten().tolist(),  # flatten 2D obs to 1D
+            *obs.flatten().tolist(),
             act, rew, val, logp, cgm_target, float(is_first), float(is_done),
-            self.cost[self.ptr]  # predicted cost
+            self.cost[self.ptr - 1],  # predicted cost
+            normalized_cost  # true rule-based cost used as label
         ]
 
         csv_path = os.path.join(self.current_dir, 'step_cost_log.csv')
 
-        # Write header if file is new
-        if self.ptr == 0 and not os.path.exists(csv_path):
+        if self.ptr == 1 and not os.path.exists(csv_path):
             with open(csv_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                header = ['step'] + [f'obs_{i}' for i in range(obs.size)] + \
-                        ['act', 'rew', 'val', 'logp', 'cgm_target', 'is_first', 'is_done', 'cost']
+                header = ['step'] + [f'obs_{i}' for i in range(len(obs.flatten()))] + \
+                         ['act', 'rew', 'val', 'logp', 'cgm_target', 'is_first', 'is_done', 'predicted_cost', 'true_cost']
                 writer.writerow(header)
 
-        # Append data
         with open(csv_path, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(log_row)
+            
+        # Save cost model weights
+        torch.save(self.cost_model.state_dict(), os.path.join(self.current_dir, 'cost_model.pth'))
 
     def finish_path(self, final_v):
         self.state_values[self.ptr] = final_v
