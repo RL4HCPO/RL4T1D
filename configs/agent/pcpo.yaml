@@ -6,10 +6,9 @@ n_rnn_hidden: 16
 n_rnn_layers: 1
 rnn_directions: 1
 bidirectional: False
-max_constraint_violation: 100
 
 # parameters for RL discounting strategies
-return_type: 'discount'   # discount | average; is average gamma and lamda -> 1.
+return_type: 'average'   # discount | average; is average gamma and lamda -> 1.
 gamma: 0.99
 lambda_: 0.95
 
@@ -19,11 +18,11 @@ shuffle_rollout: True  # rollout trajectory data is shuffled
 
 # cpo parameters
 entropy_coef: 0.001
-grad_clip: 1
+grad_clip: 20
 eps_clip: 0.1
 target_kl: 0.01
 # change the following cpo parameters ( used for policy update)
-d_k: 100
+d_k: 25000
 max_kl: 0.01
 damping: 0.1
 

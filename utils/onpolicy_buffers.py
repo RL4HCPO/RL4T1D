@@ -35,10 +35,12 @@ class RolloutBuffer:
         self.old_logprobs = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.reward = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.v_targ = torch.rand(self.n_training_workers, self.n_step, device=self.device)
+        self.cost_v_targ = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.adv = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.cost = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.cadv = torch.rand(self.n_training_workers, self.n_step, device=self.device)
         self.v_pred = torch.rand(self.n_training_workers, self.n_step + 1, device=self.device)
+        self.cost_v_pred = torch.rand(self.n_training_workers, self.n_step + 1, device=self.device)
         self.first_flag = torch.rand(self.n_training_workers, self.n_step + 1, device=self.device)
 
     def save_rollout(self, training_agent_index):
@@ -47,6 +49,7 @@ class RolloutBuffer:
         self.old_actions[training_agent_index] = data['act']
         self.old_logprobs[training_agent_index] = data['logp']
         self.v_pred[training_agent_index] = data['v_pred']
+        self.cost_v_pred[training_agent_index] = data['cost_v_pred']
         self.reward[training_agent_index] = data['reward']
         self.first_flag[training_agent_index] = data['first_flag']
         self.cost[training_agent_index] = data['cost']
@@ -71,23 +74,24 @@ class RolloutBuffer:
         return adv.to(device=orig_device), vtarg.to(device=orig_device)
     
     def computer_gcae(self):
-        orig_device = self.v_pred.device
+        orig_device = self.cost_v_pred.device
         assert orig_device == self.cost.device == self.first_flag.device
-        vpred, cost, first = (x.cpu() for x in (self.v_pred, self.cost, self.first_flag))
+        costvpred, cost, first = (x.cpu() for x in (self.cost_v_pred, self.cost, self.first_flag))
         # print('cost inside compute gcae')
         # print(cost)
         first = first.to(dtype=torch.float32)
         assert first.dim() == 2
         nenv, nsteps = cost.shape
-        assert vpred.shape == first.shape == (nenv, nsteps + 1)
+        assert costvpred.shape == first.shape == (nenv, nsteps + 1)
         cadv = torch.zeros(nenv, nsteps, dtype=torch.float32)
         lastcgaelam = 0
         for t in reversed(range(nsteps)):
             notlast = 1.0 - first[:, t+1]
-            nextvalue = vpred[:, t+1]
-            delta = cost[:, t] + notlast*self.gamma*nextvalue - vpred[:, t]
+            nextvalue = costvpred[:, t+1]
+            delta = cost[:, t] + notlast*self.gamma*nextvalue - costvpred[:, t]
             cadv[:, t] = lastcgaelam = delta + notlast* self.gamma * self.lambda_ *lastcgaelam
-        return cadv.to(device=orig_device)
+        costvtarg = (costvpred[:, :-1] + cadv)
+        return cadv.to(device=orig_device), costvtarg.to(device=orig_device)
     
 
     # the compute cost function
@@ -126,13 +130,13 @@ class RolloutBuffer:
             if self.normalize_reward:  # reward normalisation
                 self.reward = self.reward_normaliser(self.reward, self.first_flag)
             self.adv, self.v_targ = self.compute_gae()  # # calc returns
-            self.cadv = self.computer_gcae()
+            self.cadv, self.cost_v_targ = self.computer_gcae()
             # self.cost = self.compute_cost_tensor()  # Compute cost tensor
 
         if self.return_type == 'average':
             self.reward = self.reward_normaliser(self.reward, self.first_flag, type='average')
             self.adv, self.v_targ = self.compute_gae()
-            self.cadv = self.computer_gcae()
+            self.cadv, self.cost_v_targ = self.computer_gcae()
 
         #get the constraint value
         self.constraint_value = self.estimate_constraint_value()
@@ -142,6 +146,7 @@ class RolloutBuffer:
         act = self.old_actions.view(-1, 1)
         logp = self.old_logprobs.view(-1, 1)
         v_targ = self.v_targ.view(-1)
+        cost_v_targ = self.cost_v_targ.view(-1)
         adv = self.adv.view(-1)
         cadv = self.cadv.view(-1)
         first_flag = self.first_flag.view(-1)
@@ -156,7 +161,7 @@ class RolloutBuffer:
             adv = adv[rand_perm]  # torch.Size([batch])
             cadv = cadv[rand_perm]
 
-        self.rollout_buffer = dict(states=s_hist, action=act, log_prob_action=logp, value_target=v_targ, advantage=adv, len=buffer_len, cost_advantage=cadv, constraint=self.constraint_value)
+        self.rollout_buffer = dict(states=s_hist, action=act, log_prob_action=logp, value_target=v_targ, cost_val_target=cost_v_targ, advantage=adv, len=buffer_len, cost_advantage=cadv, constraint=self.constraint_value)
         return self.rollout_buffer
 
 
@@ -174,23 +179,34 @@ class RolloutWorker:
         self.rewards = np.zeros(self.size, dtype=np.float32)
         self.cost = np.ones(self.size, dtype=np.float32)
         self.state_values = np.zeros(self.size + 1, dtype=np.float32)
+        self.cost_values = np.zeros(self.size + 1, dtype=np.float32)
         self.logprobs = np.zeros(self.size, dtype=np.float32)
         self.first_flag = np.zeros(self.size + 1, dtype=np.bool_)
         self.cgm_target = np.zeros(self.size, dtype=np.float32)
         self.ptr, self.path_start_idx, self.max_size = 0, 0, self.size
 
-    def store(self, obs, act, rew, val, logp, cgm_target, is_first):
+    def store(self, obs, act, rew, val, logp, cgm_target, is_first, is_done, cost_val):
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
-        if ((obs[:, 0]).mean() < 0 ):
-            self.cost[self.ptr] = -(obs[:, 0]).mean()
+        target_cost = obs[:, 0].mean()
+        # if ((obs[:, 0]).mean() < 0 ):
+        #     self.cost[self.ptr] = -(obs[:, 0]).mean()
+        # else:
+        #     self.cost[self.ptr] = 0.0001
+        if(target_cost <= -0.9 or cgm_target <= 80):
+            self.cost[self.ptr] = 140 - cgm_target
+        elif(cgm_target > 300):
+            self.cost[self.ptr] = cgm_target - 150
         else:
-            self.cost[self.ptr] = 0.0001
+            self.cost[self.ptr] = 0
+        if(is_done):
+            self.cost[self.ptr] = 10000
         # self.cost[self.ptr] = (obs[:, 0]).mean()
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
         self.state_values[self.ptr] = val
+        self.cost_values[self.ptr] = cost_val
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
@@ -199,15 +215,17 @@ class RolloutWorker:
         # else:
         #     self.cost[self.ptr] = 0
         # # self.cost[self.ptr] = (obs[:, 0]).mean()
+        # print('cgm_target: {}, reward: {}, cost: {}, value: {}'.format(cgm_target, rew, self.cost[self.ptr], val))
         self.ptr += 1
 
-    def finish_path(self, final_v):
+    def finish_path(self, final_v, final_cost_v):
         self.state_values[self.ptr] = final_v
+        self.cost_values[self.ptr] = final_cost_v
         self.first_flag[self.ptr] = False
 
     def get(self):
         assert self.ptr == self.max_size
         self.ptr, self.path_start_idx = 0, 0
-        data = dict(obs=self.state, act=self.actions, v_pred=self.state_values,
+        data = dict(obs=self.state, act=self.actions, v_pred=self.state_values, cost_v_pred = self.cost_values,
                     logp=self.logprobs, first_flag=self.first_flag, reward=self.rewards, cost = self.cost, cgm_target=self.cgm_target)
         return {k: torch.as_tensor(v, dtype=torch.float32, device=self.device) for k, v in data.items()}

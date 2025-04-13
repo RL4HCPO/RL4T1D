@@ -55,7 +55,7 @@ class LogExperiment:
     def __init__(self, args):
         self.args = args
         self.model_logs = torch.zeros(7, device=self.args.device)
-        save_log(self.args.experiment_dir, [['policy_grad', 'value_grad', 'val_loss', 'exp_var', 'true_var', 'pi_loss', 'avg_rew']], '/model_log')
+        save_log(self.args.experiment_dir, [['policy_grad', 'value_grad', 'val_loss', 'exp_var', 'true_var', 'pi_loss', 'avg_rew', 'constraint']], '/model_log')
         save_log(self.args.experiment_dir, [['status', 'rollout', 't_rollout', 't_update', 't_test']], '/experiment_summary')
 
     def save(self, log_name, data):
@@ -96,3 +96,5 @@ class LogWorker:
         save_log(self.args.experiment_dir,
                 [[episode, counter, df['rew'].sum(), normo, hypo, sev_hypo, hyper, lgbi, hgbi, ri, sev_hyper, 0, 0]],
                 '/' + self.worker_mode + '/data/' + self.worker_mode + '_episode_summary_' + str(self.worker_id))
+        
+        return counter, normo

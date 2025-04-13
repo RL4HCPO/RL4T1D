@@ -5,6 +5,7 @@ import torch.nn as nn
 from agents.models.feature_extracter import LSTMFeatureExtractor
 from agents.models.policy import PolicyModule
 from agents.models.value import ValueModule
+from agents.models.cost_value import CostValueModule
 
 
 class ActorNetwork(nn.Module):
@@ -59,6 +60,17 @@ class CriticNetwork(nn.Module):
         lstmOut = self.FeatureExtractor.forward(s)
         value = self.ValueModule.forward(lstmOut)
         return value
+    
+class CostCriticNetwork(nn.Module):
+    def __init__(self, args):
+        super(CostCriticNetwork, self).__init__()
+        self.FeatureExtractor = LSTMFeatureExtractor(args)
+        self.ValueModule = CostValueModule(args)
+
+    def forward(self, s):
+        lstmOut = self.FeatureExtractor.forward(s)
+        value = self.ValueModule.forward(lstmOut)
+        return value
 
 
 class ActorCritic(nn.Module):
@@ -68,7 +80,7 @@ class ActorCritic(nn.Module):
         self.experiment_dir = args.experiment_dir
         self.Actor = ActorNetwork(args)
         self.Critic = CriticNetwork(args)
-        self.Critic = CriticNetwork(args)
+        self.CriticCost = CostCriticNetwork(args)
         if load:
             self.Actor = torch.load(actor_path, map_location=self.device)
             self.Critic = torch.load(critic_path, map_location=self.device)
@@ -78,13 +90,15 @@ class ActorCritic(nn.Module):
         s = torch.as_tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)  # add batch dimension
         mu, std, act, log_prob = self.Actor(s)
         s_val = self.Critic(s)
-        data = dict(mu=mu[0], std=std[0], action=act[0], log_prob=log_prob[0], state_value=s_val[0])
+        s_cost_val = self.CriticCost(s)
+        data = dict(mu=mu[0], std=std[0], action=act[0], log_prob=log_prob[0], state_value=s_val[0], cost_vale = s_cost_val[0])
         return {k: v.detach().cpu().numpy() for k, v in data.items()}
 
     def get_final_value(self, s):  # terminating V(s) of traj
         s = torch.as_tensor(s, dtype=torch.float32, device=self.device).unsqueeze(0)  # add batch dimension
         state_value = self.Critic(s)
-        return state_value[0].detach().cpu().numpy()
+        cost_value = self.CriticCost(s)
+        return state_value[0].detach().cpu().numpy(), cost_value[0].detach().cpu().numpy()
 
     def evaluate_actor(self, state, action):  # evaluate actor <batch>
         action_mean, action_std, _, _ = self.Actor(state)
@@ -95,6 +109,10 @@ class ActorCritic(nn.Module):
 
     def evaluate_critic(self, state):  # evaluate critic <batch>
         state_value = self.Critic(state)
+        return torch.squeeze(state_value)
+    
+    def evaluate_costcritic(self, state):  # evaluate critic <batch>
+        state_value = self.CriticCost(state)
         return torch.squeeze(state_value)
 
     def save(self, episode):  # save checkpoints for networks.
