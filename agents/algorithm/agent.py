@@ -89,7 +89,7 @@ class Agent:
             normo_mean = sum(normo_list)/ len(normo_list)
             self.current = counter_mean
             self.current_normo =  normo_mean
-            if(counter_mean > self.best):
+            if(counter_mean >= self.best):
                 self.best = counter_mean
                 self.best_normo = normo_mean
                 self.best_params = get_flat_params_from(self.policy.Actor)
