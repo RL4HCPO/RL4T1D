@@ -240,11 +240,48 @@ class PCPO(Agent):
                 explained_var += 1 - torch.var(y_true - y_pred) / (var_y + 1e-5)
 
         return value_grad / val_count, val_loss_log, explained_var / val_count, true_var / val_count
+    
+    def train_vf_cost(self):
+        print('Running Cost Value Function Update...')
+
+        # variables to be logged for debugging purposes.
+        val_loss_log, value_grad = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        true_var, explained_var = torch.zeros(1, device=self.device), torch.zeros(1, device=self.device)
+        val_count = torch.zeros(1, device=self.device)
+
+        for i in range(self.train_v_iters):
+            start_idx = 0
+            while start_idx < self.rollout_buffer['len']:
+                end_idx = min(start_idx + self.batch_size, self.rollout_buffer['len'])
+
+                states_batch = self.rollout_buffer['states'][start_idx:end_idx, :, :]
+                value_target = self.rollout_buffer['cost_val_target'][start_idx:end_idx]
+
+                self.optimizer_Critic_cost.zero_grad()
+                value_prediction = self.policy.evaluate_costcritic(states_batch)
+                value_loss = self.value_criterion(value_prediction, value_target)
+                value_loss.backward()
+                value_grad += torch.nn.utils.clip_grad_norm_(self.policy.CriticCost.parameters(), self.grad_clip)  # clip gradients before optimising
+                self.optimizer_Critic_cost.step()
+                val_count += 1
+                start_idx += self.batch_size
+
+                # logging.
+                val_loss_log += value_loss.detach()
+                y_pred = value_prediction.detach().flatten()
+                y_true = value_target.flatten()
+                var_y = torch.var(y_true)
+                true_var += var_y
+                explained_var += 1 - torch.var(y_true - y_pred) / (var_y + 1e-5)
+
+        # return value_grad / val_count, val_loss_log, explained_var / val_count, true_var / val_count
+        return
 
     def update(self):
         self.rollout_buffer = self.RolloutBuffer.prepare_rollout_buffer()
         self.model_logs[0], self.model_logs[5] = self.train_pi()
         self.model_logs[1], self.model_logs[2], self.model_logs[3], self.model_logs[4] = self.train_vf()
+        self.train_vf_cost()
         self.LogExperiment.save(log_name='/model_log', data=[self.model_logs.detach().cpu().flatten().numpy()])
 
 

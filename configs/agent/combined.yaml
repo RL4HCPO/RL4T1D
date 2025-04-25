@@ -30,7 +30,7 @@ damping: 0.1
 # train
 n_step: 256
 max_epi_length: 2880
-n_training_workers: 16
+n_training_workers: 4
 total_interactions: 800000  # total number of interactions the agent will train for
 n_interactions_lr_decay: 2500
 
