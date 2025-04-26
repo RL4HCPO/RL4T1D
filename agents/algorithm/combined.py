@@ -33,7 +33,7 @@ class combined(Agent):
         self.value_criterion = nn.MSELoss()
 
         self.RolloutBuffer = RolloutBuffer(args)
-
+        self.optimizer_Critic_cost = torch.optim.Adam(self.policy.CriticCost.parameters(), lr=self.vf_lr)
         # Safety constraints and parameters
         self.max_constraint_violation = args.max_constraint_violation
         self.target_kl = args.target_kl
@@ -326,7 +326,7 @@ class combined(Agent):
 
             #######
             pol_count += 1
-            start_idx += self.batch_size
+            # start_idx += self.batch_size
 
             if not continue_pi_training:
                 break
