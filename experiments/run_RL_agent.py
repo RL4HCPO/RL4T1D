@@ -32,7 +32,7 @@ def set_agent_parameters(cfg):
         agent = CPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
     elif cfg.agent.agent == 'pcpo':
-        from agents.algorithm.pcpo import PCPO
+        from agents.algorithm.pcpo_original import PCPO
         setup_folders(cfg)
         agent = PCPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
     
