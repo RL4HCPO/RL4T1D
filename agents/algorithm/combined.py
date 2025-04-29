@@ -30,6 +30,7 @@ class combined(Agent):
             print('ValueNet Params: {}'.format(sum(p.numel() for p in self.policy.Critic.parameters() if p.requires_grad)))
         self.optimizer_Actor = torch.optim.Adam(self.policy.Actor.parameters(), lr=args.pi_lr)
         self.optimizer_Critic = torch.optim.Adam(self.policy.Critic.parameters(), lr=args.vf_lr)
+        self.optimizer_Critic_cost = torch.optim.Adam(self.policy.CriticCost.parameters(), lr=self.vf_lr)
         self.value_criterion = nn.MSELoss()
 
         self.RolloutBuffer = RolloutBuffer(args)
