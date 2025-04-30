@@ -423,7 +423,7 @@ class combined(Agent):
             
             #######
             pol_count += 1
-            start_idx += self.batch_size
+            # start_idx += self.batch_size
 
             if not continue_pi_training:
                 break
