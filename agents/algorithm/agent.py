@@ -65,7 +65,7 @@ class Agent:
         testing_agents = [Worker(args=self.args, env_args=self.env_args, mode='testing', worker_id=i+self.testing_agent_id_offset)
                           for i in range(self.n_testing_workers)]
 
-        # start ppo learning
+        # start learning
         rollout, self.completed_interactions = 0, 0
         while self.completed_interactions < self.total_interactions:  # steps * n_workers * epochs. 3000 is just a large number
             tstart = time.perf_counter()
@@ -93,14 +93,11 @@ class Agent:
                 self.best = counter_mean
                 self.best_normo = normo_mean
                 self.best_params = get_flat_params_from(self.policy.Actor)
-            # elif(counter_mean == self.best and normo_mean >= self.best_normo):
-            #     self.best = counter_mean
-            #     self.best_normo = normo_mean
-            #     self.best_params = get_flat_params_from(self.policy.Actor)
 
             randnum = random.random()
             current_params = get_flat_params_from(self.policy.Actor)
             print('randnum: {}, temperature: {}, avg_t: {}, best_avg_t: {}, avg_normo: {}, best_avg_normo: {}.'.format(randnum, self.temperature, self.current, self.best, self.current_normo, self.best_normo))
+            # SRPO Rollback 
             if(self.completed_interactions > 400000  and self.current <= self.best and self.best_params != None and not torch.equal(self.best_params, current_params)):
                 self.temperature *= 0.95
                 if(randnum > self.temperature):
@@ -120,14 +117,10 @@ class Agent:
             experiment_done = True if self.completed_interactions > self.total_interactions else False
 
             # logging
-            #wandb.log({"Training Progress": (completed_interactions/self.total_interactions)*100})
             print('\n---------------------------------------------------------')
             print('Training Progress: {:.2f}%, Elapsed time: {:.4f} minutes.'.format(min(100.00, (self.completed_interactions/self.total_interactions)*100),
                                                                                      (time.perf_counter() - tstart)/60))
             print('---------------------------------------------------------')
-
-            # print('Rollout Time (seconds): {}, update: {}, testing: {}'.format((t2 - t1), (t4 - t2), (t6 - t4))) if self.args.verbose else None
-            # self.LogExperiment.save(log_name='/experiment_summary', data=[[experiment_done, rollout, (t2 - t1), (t4 - t2), (t6 - t4)]])
 
             # when training complete conduct final validation: typically n=500.
             if experiment_done:

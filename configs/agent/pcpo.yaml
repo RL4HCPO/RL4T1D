@@ -21,7 +21,7 @@ entropy_coef: 0.001
 grad_clip: 20
 eps_clip: 0.1
 target_kl: 0.01
-# change the following cpo parameters ( used for policy update)
+# change the following cpo parameters (used for policy update)
 d_k: 25000
 max_kl: 0.01
 damping: 0.1

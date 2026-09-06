@@ -9,9 +9,9 @@ from utils.logger import LogExperiment
 from utils.core import get_flat_params_from, set_flat_params_to, compute_flat_grad
 
 
-class PCPO(Agent):
+class SRPO(Agent):
     def __init__(self, args, env_args, load_model, actor_path, critic_path):
-        super(PCPO, self).__init__(args, env_args=env_args)
+        super(SRPO, self).__init__(args, env_args=env_args)
         self.args = args
         self.env_args = env_args
         self.device = args.device
@@ -30,7 +30,6 @@ class PCPO(Agent):
             print('PolicyNet Params: {}'.format(sum(p.numel() for p in self.policy.Actor.parameters() if p.requires_grad)))
             print('ValueNet Params: {}'.format(sum(p.numel() for p in self.policy.Critic.parameters() if p.requires_grad)))
         self.optimizer_Actor = torch.optim.Adam(self.policy.Actor.parameters(), lr=self.pi_lr)
-        # self.optimizer_Actor_2 = torch.optim.Adam(self.policy.Actor.parameters(), lr=self.pi_lr)
         self.optimizer_Critic = torch.optim.Adam(self.policy.Critic.parameters(), lr=self.vf_lr)
         self.optimizer_Critic_cost = torch.optim.Adam(self.policy.CriticCost.parameters(), lr=self.vf_lr)
         self.value_criterion = nn.MSELoss()
@@ -59,21 +58,6 @@ class PCPO(Agent):
         continue_pi_training, buffer_len = True, self.rollout_buffer['len']
         constraint = self.rollout_buffer['constraint']
 
-        # if(constraint <= self.best_constraint):
-        #     self.best_constraint = constraint
-        #     self.best_params = get_flat_params_from(self.policy.Actor)
-
-        # randnum = random.random()
-        # current_params = get_flat_params_from(self.policy.Actor)
-        # print('randnum: {}, temperature: {}, Constraint: {}, best_constraint: {}.'.format(randnum, self.temperature, constraint, self.best_constraint))
-        # if(self.best_constraint <= self.max_allowed_cost and constraint > self.best_constraint and self.best_params != None and not torch.equal(self.best_params, current_params)):
-        #     self.temperature *= 0.95
-        #     if(randnum > self.temperature):
-        #         print('Early stop => Epoch {}, Batch {}, Constraint: {}, temperature: {}.'.format(0, 0, constraint, self.temperature))
-        #         set_flat_params_to(self.policy.Actor, self.best_params)
-        #         return 0, 0, constraint
-            
-
         for i in range(self.train_pi_iters):
             start_idx, n_batch = 0, 0
             while start_idx < buffer_len:
@@ -90,7 +74,6 @@ class PCPO(Agent):
                 cost_advantages_batch = (cost_advantages_batch - cost_advantages_batch.mean()) / (cost_advantages_batch.std() + 1e-5)
 
                 self.optimizer_Actor.zero_grad()
-                # self.optimizer_Actor_2.zero_grad()
                 logprobs_prediction, dist_entropy = self.policy.evaluate_actor(states_batch, actions_batch)
                 ratios = torch.exp(logprobs_prediction - logprobs_batch)
                 ratios = ratios.squeeze()
@@ -98,26 +81,10 @@ class PCPO(Agent):
                 r_theta_clip = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * advantages_batch
                 policy_loss = -torch.min(r_theta, r_theta_clip).mean() - self.entropy_coef * dist_entropy.mean()
                 policy_loss /= 2
-                # policy_loss *= self.best_constraint * 1.e-5
-                # cost loss
                 cost_theta = ratios * cost_advantages_batch
                 cost_theta_clip = torch.clamp(ratios, 1 - self.eps_clip, 1 + self.eps_clip) * cost_advantages_batch
                 cost_loss = torch.min(cost_theta, cost_theta_clip).mean() - self.entropy_coef * dist_entropy.mean()
                 cost_loss /= 2
-                # cost_loss *= self.best_constraint * 1.e-5
-                # if(self.best_constraint < 20000):
-                #     cost_loss *= 1.e-1
-                #     policy_loss *= 1.e-1
-                # if(self.best_constraint < 5000):
-                #     cost_loss *= 1.e-1
-                #     policy_loss *= 1.e-1
-                # loss_ratio = policy_loss / cost_loss + 1e-5
-
-                # print('policy loss: {}, cost loss: {}'.format(policy_loss, cost_loss))
-                # loss = policy_loss / (cost_loss * 10 + 1e-5)
-                # loss = cost_loss
-                # loss = constraint * cost_loss
-                # loss = policy_loss
                 # early stop: approx kl calculation
                 log_ratio = logprobs_prediction - logprobs_batch
                 approx_kl = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).detach().cpu().numpy()
@@ -138,11 +105,6 @@ class PCPO(Agent):
                 pol_count += 1
                 self.optimizer_Actor.step()
                 self.optimizer_Actor.zero_grad()
-
-                # self.optimizer_Actor.zero_grad()
-                # cost_loss.backward()
-                # policy_grad += torch.nn.utils.clip_grad_norm_(self.policy.Actor.parameters(), self.grad_clip)  # clip gradients before optimising
-                # self.optimizer_Actor.step()
                 start_idx += self.batch_size
 
             if not continue_pi_training:
@@ -221,8 +183,6 @@ class PCPO(Agent):
                 var_y = torch.var(y_true)
                 true_var += var_y
                 explained_var += 1 - torch.var(y_true - y_pred) / (var_y + 1e-5)
-
-        # return value_grad / val_count, val_loss_log, explained_var / val_count, true_var / val_count
         return
 
     def update(self):

@@ -4,7 +4,7 @@ experiment:
   experiment_dir: ../results/${hydra:job.name}
   device: 'cpu'  # Set to 'cuda' for GPU, or 'cpu' for CPU
   verbose: True
-  seed: 0
+  seed: 1
 
 # Default configurations
 defaults:

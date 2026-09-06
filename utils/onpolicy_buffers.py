@@ -77,8 +77,6 @@ class RolloutBuffer:
         orig_device = self.cost_v_pred.device
         assert orig_device == self.cost.device == self.first_flag.device
         costvpred, cost, first = (x.cpu() for x in (self.cost_v_pred, self.cost, self.first_flag))
-        # print('cost inside compute gcae')
-        # print(cost)
         first = first.to(dtype=torch.float32)
         assert first.dim() == 2
         nenv, nsteps = cost.shape
@@ -92,19 +90,6 @@ class RolloutBuffer:
             cadv[:, t] = lastcgaelam = delta + notlast* self.gamma * self.lambda_ *lastcgaelam
         costvtarg = (costvpred[:, :-1] + cadv)
         return cadv.to(device=orig_device), costvtarg.to(device=orig_device)
-    
-
-    # the compute cost function
-    
-    # def compute_cost_tensor(self):
-    #     orig_device = self.cost.device
-    #     cost_tensor = torch.zeros_like(self.cost, device=orig_device)
-    #     for t in reversed(range(self.n_step)):
-    #         if t == self.n_step - 1:
-    #             cost_tensor[:, t] = self.cost[:, t]
-    #         else:
-    #             cost_tensor[:, t] = self.cost[:, t] + self.gamma * cost_tensor[:, t + 1]
-    #     return cost_tensor   
     
 
     def estimate_constraint_value(self):
@@ -131,7 +116,6 @@ class RolloutBuffer:
                 self.reward = self.reward_normaliser(self.reward, self.first_flag)
             self.adv, self.v_targ = self.compute_gae()  # # calc returns
             self.cadv, self.cost_v_targ = self.computer_gcae()
-            # self.cost = self.compute_cost_tensor()  # Compute cost tensor
 
         if self.return_type == 'average':
             self.reward = self.reward_normaliser(self.reward, self.first_flag, type='average')
@@ -189,10 +173,6 @@ class RolloutWorker:
         assert self.ptr < self.max_size
         scaled_cgm = linear_scaling(x=cgm_target, x_min=self.args.glucose_min, x_max=self.args.glucose_max)
         target_cost = obs[:, 0].mean()
-        # if ((obs[:, 0]).mean() < 0 ):
-        #     self.cost[self.ptr] = -(obs[:, 0]).mean()
-        # else:
-        #     self.cost[self.ptr] = 0.0001
         if(target_cost <= -0.9 or cgm_target <= 80):
             self.cost[self.ptr] = 140 - cgm_target
         elif(cgm_target > 300):
@@ -201,7 +181,6 @@ class RolloutWorker:
             self.cost[self.ptr] = 0
         if(is_done):
             self.cost[self.ptr] = 10000
-        # self.cost[self.ptr] = (obs[:, 0]).mean()
         self.state[self.ptr] = obs
         self.actions[self.ptr] = act
         self.rewards[self.ptr] = rew
@@ -210,12 +189,6 @@ class RolloutWorker:
         self.logprobs[self.ptr] = logp
         self.first_flag[self.ptr] = is_first
         self.cgm_target[self.ptr] = scaled_cgm
-        # if cgm_target <= 70:
-        #     self.cost[self.ptr] = 1
-        # else:
-        #     self.cost[self.ptr] = 0
-        # # self.cost[self.ptr] = (obs[:, 0]).mean()
-        # print('cgm_target: {}, reward: {}, cost: {}, value: {}'.format(cgm_target, rew, self.cost[self.ptr], val))
         self.ptr += 1
 
     def finish_path(self, final_v, final_cost_v):
