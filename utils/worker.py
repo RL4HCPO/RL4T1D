@@ -39,20 +39,25 @@ class OnPolicyWorker(Worker):
 
             if self.worker_mode == 'training': # store -> rollout data for training.
                 is_first = True if self.counter == 0 else False
-                buffer.store(self.state, rl_action['action'][0], reward, rl_action['state_value'], rl_action['log_prob'], info['cgm'].CGM, is_first)
+                # print(rl_action)
+                buffer.store(self.state, rl_action['action'][0], reward, rl_action['state_value'][0], rl_action['log_prob'][0], info['cgm'].CGM, is_first, is_done, rl_action['cost_vale'][0])
 
             logger.update(self.counter, self.episode, info['cgm'], rl_action, pump_action, 0, reward, info)
 
             self.state = state  # update -> state.
             self.counter += 1
             if is_done or self.counter > self.stop_factor:  # episode termination criteria.
-                logger.save(self.episode, self.counter)
                 if self.worker_mode == 'training':
-                    final_val = policy.get_final_value(self.state)
-                    buffer.finish_path(final_val)
+                    _ = self.logger.save(self.episode, self.counter)
+                    final_val, final_cost_val = policy.get_final_value(self.state)
+                    buffer.finish_path(final_val[0], final_cost_val[0])
+                elif(self.worker_mode == 'testing'):
+                    counter, normo = self.logger.save(self.episode, self.counter)
                 # stop rollout if this is a testing worker; else reset an env and continue.
                 if self.worker_mode != 'training': break
                 self._reset()
+        if(self.worker_mode == 'testing'):
+            return counter, normo
         return
 
 

@@ -1,6 +1,7 @@
 import sys
 import torch
 import random
+import os
 import warnings
 import numpy as np
 from decouple import config
@@ -8,11 +9,14 @@ MAIN_PATH = config('MAIN_PATH')
 sys.path.insert(1, MAIN_PATH)
 
 import hydra
-import mlflow
+from hydra import compose, initialize
 from omegaconf import DictConfig, OmegaConf
-from utils.logger import setup_folders, Logger
+from hydra.core.global_hydra import GlobalHydra
+# import wandb
 
 warnings.simplefilter('ignore', Warning)
+
+from utils.logger import setup_folders, copy_folder
 
 
 def set_agent_parameters(cfg):
@@ -25,17 +29,20 @@ def set_agent_parameters(cfg):
         from agents.algorithm.ppo import PPO
         agent = PPO(args=cfg.agent, env_args=cfg.env, logger=logger, load_model=False, actor_path='', critic_path='')
 
-    elif cfg.agent.agent == 'a2c':
-        from agents.algorithm.a2c import A2C
-        agent = A2C(args=cfg.agent, env_args=cfg.env, logger=logger, load_model=False, actor_path='', critic_path='')
+    elif cfg.agent.agent == 'cpo':
+        from agents.algorithm.cpo import CPO
+        setup_folders(cfg)
+        agent = CPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
-    elif cfg.agent.agent == 'sac':
-        from agents.algorithm.sac import SAC
-        agent = SAC(args=cfg.agent, env_args=cfg.env, logger=logger, load_model=False, actor_path='', critic_path='')
+    elif cfg.agent.agent == 'srpo':
+        from agents.algorithm.srpo import SRPO
+        setup_folders(cfg)
+        agent = SRPO(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
-    elif cfg.agent.agent == 'g2p2c':
-        from agents.algorithm.g2p2c import G2P2C
-        agent = G2P2C(args=cfg.agent, env_args=cfg.env, logger=logger, load_model=False, actor_path='', critic_path='')
+    elif cfg.agent.agent == 'combined':
+        from agents.algorithm.combined import combined
+        setup_folders(cfg)
+        agent = combined(args=cfg.agent, env_args=cfg.env, load_model=False, actor_path='', critic_path='')
 
     else:
         print('Please select an agent for the experiment. Hint: a2c, sac, ppo, g2p2c')
@@ -44,12 +51,9 @@ def set_agent_parameters(cfg):
 
 @hydra.main(version_base=None, config_path="../configs", config_name="config")
 def main(cfg: DictConfig) -> None:
+    agent = set_agent_parameters(cfg)  # load agent - used for normal running
 
-    if cfg.agent.debug:  # if debug override params to run experiment in a smaller scale.
-        for key in cfg.agent.debug_params:
-            if key in cfg.agent:
-                cfg.agent[key] = cfg.agent.debug_params[key]
-
+    # agent = set_agent_parameters(cfg, actor, critic, True)
     if cfg.experiment.verbose:
         print('\nExperiment Starting...')
         print("\nOptions =================>")
@@ -78,3 +82,5 @@ def main(cfg: DictConfig) -> None:
 if __name__ == '__main__':
     main()
 
+
+#python run_RL_agent.py experiment.folder=test4 agent.debug=True hydra/job_logging=disabled

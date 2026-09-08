@@ -48,45 +48,19 @@ def save_log(directory, file, data):
         f.close()
 
 
-class Logger:
-    def __init__(self, cfg):
-        self.mlflow_track = cfg.mlflow.track
-        self.experiment_dir = cfg.experiment.experiment_dir
+class LogExperiment:
+    def __init__(self, args):
+        self.args = args
+        self.model_logs = torch.zeros(7, device=self.args.device)
+        save_log(self.args.experiment_dir, [['policy_grad', 'value_grad', 'val_loss', 'exp_var', 'true_var', 'pi_loss', 'avg_rew', 'constraint']], '/model_log')
+        save_log(self.args.experiment_dir, [['status', 'rollout', 't_rollout', 't_update', 't_test']], '/experiment_summary')
 
-        # setup experiment logs
-        self.experiment_logs = cfg.logger.experiment_logs
-        self.experiment_logs_keys = {}
-        for log in self.experiment_logs:
-            save_log(directory=self.experiment_dir, file=log, data=[cfg.logger[log]])
-            self.experiment_logs_keys[log] = cfg.logger[log]
-
-        # setup worker logs
-        self.worker_logs = cfg.logger.worker_logs
-        self.worker_logs_keys = {}
-        for log in self.worker_logs:
-            self.worker_logs_keys[log] = cfg.logger[log]
-        self.logWorker = {}
-        worker_ids = [[i+cfg.agent.training_agent_id_offset, 'training'] for i in range(cfg.agent.n_training_workers)] + \
-                     [[i+cfg.agent.testing_agent_id_offset, 'testing'] for i in range(cfg.agent.n_testing_workers)] + \
-                     [[i+cfg.agent.validation_agent_id_offset, 'testing'] for i in range(cfg.agent.n_val_trials)]
-        for ids in range(0, len(worker_ids)):
-            for log in self.worker_logs:
-                save_log(directory=self.experiment_dir, file=worker_ids[ids][1] + '/'+log+'_' + str(worker_ids[ids][0]),
-                         data=[cfg.logger[log]])
-            self.logWorker[worker_ids[ids][0]] = LogWorker(cfg.agent, worker_ids[ids][1], worker_ids[ids][0], self.worker_logs_keys)
-
-    def save_rollout(self, data):
-        for log in self.experiment_logs:
-            arr = []
-            for key in self.experiment_logs_keys[log]:
-                arr.append(data.get(key, 0))
-            save_log(directory=self.experiment_dir, file=log, data=[arr])
-        if self.mlflow_track:
-            mlflow.log_metrics(data)
+    def save(self, log_name, data):
+        save_log(self.args.experiment_dir, data, log_name)
 
 
-class LogWorker:  # TODO: improve handling the logs.
-    def __init__(self, args, mode, worker_id, keys):
+class LogWorker:
+    def __init__(self, args, mode, worker_id):
         self.args = args
         self.keys = keys
         self.worker_mode = mode
@@ -116,5 +90,7 @@ class LogWorker:  # TODO: improve handling the logs.
         # log the summary stats for the episode (rollout)
         normo, hypo, sev_hypo, hyper, lgbi, hgbi, ri, sev_hyper = time_in_range(df['cgm'])
         save_log(self.args.experiment_dir,
-                self.worker_mode + '/worker_episode_summary_' + str(self.worker_id),
-                 [[episode, counter, df['rew'].sum(), normo, hypo, sev_hypo, hyper, lgbi, hgbi, ri, sev_hyper, 0, 0]])
+                [[episode, counter, df['rew'].sum(), normo, hypo, sev_hypo, hyper, lgbi, hgbi, ri, sev_hyper, 0, 0]],
+                '/' + self.worker_mode + '/data/' + self.worker_mode + '_episode_summary_' + str(self.worker_id))
+        
+        return counter, normo
